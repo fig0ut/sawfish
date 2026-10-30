@@ -1,0 +1,207 @@
+name: Sawfish desktop
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sawfish-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      rostra_repository: ${{ steps.metadata.outputs.rostra_repository }}
+      rostra_commit: ${{ steps.metadata.outputs.rostra_commit }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - id: metadata
+        name: Read version and pinned core
+        env:
+          SAWFISH_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python3 scripts/ci.py metadata
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: ${{ steps.metadata.outputs.rostra_repository }}
+          ref: ${{ steps.metadata.outputs.rostra_commit }}
+          path: .ci/rostra
+          persist-credentials: false
+      - name: Verify pinned desktop core before dependency builds
+        run: python3 scripts/ci.py verify-core --rostra .ci/rostra --require-clean
+
+  build:
+    needs: prepare
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+            arch: amd64
+            qt_host: linux
+            qt_arch: linux_gcc_64
+            qt_directory: gcc_64
+            qt_archives: qtbase qtsvg qttools qttranslations qtwayland icu
+          - runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+            qt_host: linux_arm64
+            qt_arch: linux_gcc_arm64
+            qt_directory: gcc_arm64
+            qt_archives: qtbase qtsvg qttools qttranslations qtwayland icu
+          - runner: windows-2022
+            os: windows
+            arch: amd64
+            qt_host: windows
+            qt_arch: win64_msvc2022_64
+            qt_directory: msvc2022_64
+            qt_archives: qtbase qtsvg qttools qttranslations d3dcompiler_47 opengl32sw
+            msvc_arch: x64
+          - runner: windows-11-arm
+            os: windows
+            arch: arm64
+            qt_host: windows_arm64
+            qt_arch: win64_msvc2022_arm64
+            qt_directory: msvc2022_arm64
+            qt_archives: qtbase qtsvg qttools qttranslations
+            msvc_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SAWFISH_QT_VERSION: '6.8.3'
+      SAWFISH_VERSION: ${{ needs.prepare.outputs.version }}
+      SAWFISH_TARGET: ${{ matrix.os }}-${{ matrix.arch }}
+      SAWFISH_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Preserve protocol file bytes on Windows
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: ${{ needs.prepare.outputs.rostra_repository }}
+          ref: ${{ needs.prepare.outputs.rostra_commit }}
+          path: .ci/rostra
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: 1.26.10
+          cache-dependency-path: .ci/rostra/go.sum
+      - name: Patch Go for Windows ARM64
+        if: matrix.os == 'windows' && matrix.arch == 'arm64'
+        shell: bash
+        working-directory: .ci/rostra
+        run: .github/patch_go_for_windows_arm64.sh
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        # Discover the installed VS version; Windows ARM64 runners use VS 2026.
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build patchelf libgl1-mesa-dev libegl1-mesa-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 \
+            libxcb-xkb1 libfontconfig1 libdbus-1-3 libx11-xcb1 libwayland-client0
+      - name: Cache Qt SDK
+        id: qt-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .deps/qt
+          key: qt-${{ runner.os }}-${{ runner.arch }}-${{ env.SAWFISH_QT_VERSION }}-${{ matrix.qt_arch }}-2
+      - name: Install pinned Qt SDK
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        env:
+          QT_HOST: ${{ matrix.qt_host }}
+          QT_ARCH: ${{ matrix.qt_arch }}
+          QT_ARCHIVES: ${{ matrix.qt_archives }}
+        run: |
+          python -m pip install aqtinstall==3.3.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $archives = $env:QT_ARCHIVES -split ' '
+          python -m aqt install-qt $env:QT_HOST desktop $env:SAWFISH_QT_VERSION $env:QT_ARCH --outputdir .deps/qt --archives $archives
+      - name: Set paths and short socket directory
+        env:
+          QT_DIRECTORY: ${{ matrix.qt_directory }}
+        run: python scripts/ci.py environment
+      - name: Cache gRPC and matching Protobuf
+        id: grpc-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .deps/ci-grpc
+          key: grpc-${{ matrix.runner }}-${{ runner.arch }}-${{ hashFiles('scripts/ci.py') }}
+      - name: Build pinned gRPC with its dependencies
+        if: steps.grpc-cache.outputs.cache-hit != 'true'
+        run: python scripts/ci.py dependencies
+      - name: Build GUI and bundled core
+        run: python scripts/ci.py build --rostra .ci/rostra
+      - name: Test native IPC, ownership, updates, models and UI
+        run: python scripts/ci.py test
+      - name: Package and smoke-test
+        run: python scripts/ci.py package --rostra .ci/rostra
+      - name: Upload package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sawfish-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: logs-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            build/Testing/
+            build/test-results.xml
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            .ci/grpc-build/CMakeFiles/CMakeConfigureLog.yaml
+            aqtinstall.log
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: sawfish-*
+          merge-multiple: true
+          path: dist
+      - name: Attach packages to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          cd dist
+          gh release upload "$RELEASE_TAG" -- *.tar.gz *.zip

@@ -1,0 +1,38 @@
+# Build output and downloaded dependencies
+/build*/
+/cmake-build-*/
+/.deps/
+/.ci/
+/dist/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/CTestTestfile.cmake
+/DartConfiguration.tcl
+/Testing/
+/build.ninja
+/.ninja_deps
+/.ninja_log
+/compile_commands.json
+
+# Local tools, caches, and logs
+__pycache__/
+*.py[cod]
+*.log
+/.qtcreator/
+/.idea/
+/.vscode/
+/CMakeUserPresets.json
+*.user
+*.user.*
+*.swp
+*.swo
+*~
+
+# Local environment and OS metadata
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+Desktop.ini
