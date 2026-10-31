@@ -5,8 +5,11 @@
 namespace {
 QString plainLog(QString message) {
     // Strip terminal control sequences before they reach display, search or copy.
-    static const QRegularExpression osc(QStringLiteral("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)"));
-    static const QRegularExpression csi(QStringLiteral("(?:\x1b\\[|\x9b)[0-?]*[ -/]*[@-~]"));
+    // Keep control characters as regex escapes. MSVC can drop a C++ \x9b
+    // inside QStringLiteral, leaving an empty alternative that matches log text.
+    static const QRegularExpression osc(
+        QStringLiteral(R"(\x{1b}\][^\x{07}\x{1b}]*(?:\x{07}|\x{1b}\\))"));
+    static const QRegularExpression csi(QStringLiteral(R"((?:\x{1b}\[|\x{9b})[0-?]*[ -/]*[@-~])"));
     // Some core log paths have already removed ESC but left the SGR payload.
     static const QRegularExpression sgr(QStringLiteral("\\[[0-9;:]*m"));
     static const QRegularExpression prefix(

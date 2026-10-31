@@ -13,11 +13,10 @@ import sys
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from build_grpc import GRPC_COMMIT, GRPC_PREFIX, GRPC_VERSION, dependencies
+
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = Path(os.environ.get("SAWFISH_BUILD_DIR", ROOT / "build")).resolve()
-GRPC_PREFIX = ROOT / ".deps/ci-grpc"
-GRPC_COMMIT = "3252a89f10d8e92997862167ca7d095ecda85973"  # v1.84.0
-GRPC_VERSION = "1.84.0"
 VERSION_PATTERN = r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?"
 PROTOS = ("daemon/started_service.proto", "daemon/managed_service.proto",
           "experimental/boxdd/desktop_service.proto")
@@ -25,10 +24,11 @@ WINDOWS = sys.platform == "win32"
 SUFFIX = ".exe" if WINDOWS else ""
 
 
-def run(*args, cwd=ROOT, capture=False, env=None):
+def run(*args, cwd=ROOT, capture=False, env=None, timeout=None):
     print("+", " ".join(str(a) for a in args), flush=True)
     result = subprocess.run([str(a) for a in args], cwd=cwd, check=True,
-                            text=True, stdout=subprocess.PIPE if capture else None, env=env)
+                            text=True, stdout=subprocess.PIPE if capture else None, env=env,
+                            timeout=timeout)
     return result.stdout.strip() if capture else None
 
 
@@ -92,57 +92,18 @@ def environment():
         raise ValueError(f"Qt SDK not found at {qt}")
     temporary = Path(os.environ["RUNNER_TEMP"]) / "sf"
     temporary.mkdir(parents=True, exist_ok=True)
+    toolchain = ("msvc-" + os.environ["VCToolsVersion"].strip() if WINDOWS else
+                 "gcc-" + run("c++", "-dumpfullversion", "-dumpversion", capture=True))
     values = {"SAWFISH_QT_PREFIX": qt, "TEMP": temporary, "TMP": temporary, "TMPDIR": temporary}
+    values["SAWFISH_CPP_TOOLCHAIN"] = toolchain
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
         output.writelines(f"{key}={value}\n" for key, value in values.items())
     with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as output:
         output.write(str(qt / "bin") + "\n")
 
 
-def copy_licenses(source, destination):
-    """Keep dependency license/notice files next to the installed static libraries."""
-    for directory, directories, files in os.walk(source):
-        directories[:] = [name for name in directories if name != ".git"]
-        for name in files:
-            if name.upper().startswith(("LICENSE", "COPYING", "NOTICE", "COPYRIGHT")):
-                path = Path(directory) / name
-                target = destination / path.relative_to(source)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, target)
-
-
-def dependencies():
-    source, build = ROOT / ".ci/grpc", ROOT / ".ci/grpc-build"
-    source.parent.mkdir(exist_ok=True)
-    if not source.exists():
-        run("git", "init", source)
-        run("git", "remote", "add", "origin", "https://github.com/grpc/grpc.git", cwd=source)
-    run("git", "fetch", "--depth", "1", "origin", GRPC_COMMIT, cwd=source)
-    run("git", "checkout", "--detach", GRPC_COMMIT, cwd=source)
-    # Only dependencies used by this C++ build; grpc-proto supplies the channelz
-    # and reflection schemas even when tests are disabled. Avoid test suites
-    # such as bloaty and its own large collection of submodules.
-    run("git", "submodule", "update", "--init", "--recursive", "--depth", "1", "--",
-        "third_party/abseil-cpp", "third_party/boringssl-with-bazel", "third_party/cares/cares",
-        "third_party/grpc-proto", "third_party/protobuf", "third_party/re2",
-        "third_party/zlib", cwd=source)
-    options = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_STANDARD=17",
-               "-DCMAKE_POSITION_INDEPENDENT_CODE=ON", "-DCMAKE_INSTALL_LIBDIR=lib",
-               "-DBUILD_SHARED_LIBS=OFF", "-DgRPC_INSTALL=ON", "-DgRPC_BUILD_TESTS=OFF",
-               "-DABSL_PROPAGATE_CXX_STD=ON", "-DABSL_ENABLE_INSTALL=ON",
-               "-Dprotobuf_BUILD_TESTS=OFF", "-Dprotobuf_BUILD_SHARED_LIBS=OFF",
-               "-DgRPC_MSVC_STATIC_RUNTIME=OFF", "-Dprotobuf_MSVC_STATIC_RUNTIME=OFF"]
-    options += [f"-DgRPC_BUILD_GRPC_{language}_PLUGIN=OFF"
-                for language in ("CSHARP", "NODE", "OBJECTIVE_C", "PHP", "PYTHON", "RUBY")]
-    run("cmake", "-S", source, "-B", build, "-G", "Ninja",
-        f"-DCMAKE_INSTALL_PREFIX={GRPC_PREFIX}", *options)
-    run("cmake", "--build", build, "--parallel", os.environ.get("SAWFISH_BUILD_JOBS", "2"))
-    run("cmake", "--install", build)
-    copy_licenses(source, GRPC_PREFIX / "share/licenses/grpc-and-dependencies")
-
-
 def core_info(binary):
-    info = json.loads(run(binary, "version", capture=True))
+    info = json.loads(run(binary, "version", capture=True, timeout=30))
     if info.get("api_version") != 4 or not isinstance(info.get("version"), str) or not info["version"]:
         raise ValueError("Bundled Rostra does not implement the required core version/API contract")
     return info
@@ -259,6 +220,9 @@ def package(source):
                                        if str(qt).lower() not in p.lower())
     # An offscreen plugin is bundled explicitly for this native smoke test.
     smoke_env["QT_QPA_PLATFORM"] = "offscreen"
+    # QCommandLineParser can show a native Windows message box for --version
+    # when there is no console. That dialog ignores the offscreen platform.
+    smoke_env["QT_COMMAND_LINE_PARSER_NO_GUI_MESSAGE_BOXES"] = "1"
     native_plugin = "qwindows.dll" if WINDOWS else "libqxcb.so"
     platforms = list(stage.rglob(native_plugin))
     if len(platforms) != 1:
@@ -269,9 +233,19 @@ def package(source):
     if not WINDOWS:
         relative = os.path.relpath(stage / "lib", platform_folder)
         run("patchelf", "--set-rpath", "$ORIGIN/" + relative, platform_folder / offscreen)
-    run(stage / "bin" / ("sawfish" + SUFFIX), "--version", env=smoke_env)
+    actual_version = run(stage / "bin" / ("sawfish" + SUFFIX), "--version",
+                         env=smoke_env, capture=True, timeout=30)
+    if actual_version != f"Sawfish {version}":
+        raise ValueError(f"Packaged GUI returned an unexpected version: {actual_version!r}")
+    print(actual_version, flush=True)
     # Exercise the exact packaged core, including authenticated gRPC over UDS.
-    run(BUILD / ("sawfish_desktop_tests" + SUFFIX), env=os.environ | {"SAWFISH_TEST_BACKEND": str(binary)})
+    test_logs = BUILD / "Testing/QtTest"
+    test_logs.mkdir(parents=True, exist_ok=True)
+    run(BUILD / ("sawfish_desktop_tests" + SUFFIX), "-o", "-,txt",
+        "-o", f"{test_logs / 'sawfish_packaged_core.txt'},txt",
+        "-o", f"{test_logs / 'sawfish_packaged_core.xml'},junitxml",
+        env=os.environ | {"SAWFISH_TEST_BACKEND": str(binary), "QT_FORCE_STDERR_LOGGING": "1"},
+        timeout=90)
     output = ROOT / "dist"
     output.mkdir(exist_ok=True)
     shutil.make_archive(str(output / name), "zip" if WINDOWS else "gztar",
@@ -298,6 +272,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
         print(f"CI error: {error}", file=sys.stderr)
         sys.exit(1)

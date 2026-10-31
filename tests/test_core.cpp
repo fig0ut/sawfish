@@ -29,6 +29,42 @@ class CoreTest : public QObject {
         QCOMPARE(cpu.sample(QCoreApplication::applicationPid()).value(), 0.);
 #endif
     }
+    void logTerminalFormatting_data() {
+        QTest::addColumn<QString>("message");
+        QTest::addColumn<QString>("expected");
+        QString printable;
+        for (ushort c = 0x20; c <= 0x7e; ++c)
+            printable += QChar(c);
+        QTest::newRow("printable-ascii") << printable << printable;
+        const auto unicode = QStringLiteral(u"出口 › café Ελληνικά 😀");
+        QTest::newRow("unicode") << unicode << unicode;
+        QTest::newRow("plain-log") << QStringLiteral("[0000] rostra started (0.01s)")
+                                   << QStringLiteral("[0000] rostra started (0.01s)");
+        QTest::newRow("sgr") << QStringLiteral("before \x1b[38;2;255;0;0mred\x1b[0m after")
+                             << QStringLiteral("before red after");
+        QTest::newRow("c1-csi") << (QChar(0x9b) + QStringLiteral("36mcyan") + QChar(0x9b) +
+                                    QStringLiteral("0m"))
+                                << QStringLiteral("cyan");
+        QTest::newRow("osc-bell") << QStringLiteral("\x1b]0;terminal title\x07real error")
+                                  << QStringLiteral("real error");
+        QTest::newRow("osc-st") << QStringLiteral(
+                                       "\x1b]8;;https://example.org\x1b\\link\x1b]8;;\x1b\\")
+                                << QStringLiteral("link");
+        QTest::newRow("stripped-esc")
+            << QStringLiteral("[36mINFO[0m[0001] field[0]") << QStringLiteral("[0001] field[0]");
+    }
+    void logTerminalFormatting() {
+        QFETCH(QString, message);
+        QFETCH(QString, expected);
+        LogModel model;
+        model.append({{4, message}});
+        QCOMPARE(model.index(0).data(LogModel::MessageRole).toString(), expected);
+        // Paused messages pass through the sanitizer again on resume.
+        model.setPaused(true);
+        model.append({{4, message}});
+        model.setPaused(false);
+        QCOMPARE(model.index(1).data(LogModel::MessageRole).toString(), expected);
+    }
     void logRetentionAndTerminalFormatting() {
         LogModel model;
         QAbstractItemModelTester tester(&model,
@@ -228,9 +264,12 @@ class CoreTest : public QObject {
         ProfileStore reopened(directory.filePath("store"));
         QVERIFY2(reopened.load(&error), qPrintable(error));
         QCOMPARE(reopened.find(id)->content.toUtf8(), content);
+#ifdef Q_OS_UNIX
+        // QFile's Windows permissions do not represent POSIX group/other bits.
         const auto permissions = QFile::permissions(directory.filePath("store/profiles.json"));
         QVERIFY(!(permissions & (QFileDevice::ReadGroup | QFileDevice::ReadOther |
                                  QFileDevice::WriteGroup | QFileDevice::WriteOther)));
+#endif
         QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(file.readAll(), content);
     }

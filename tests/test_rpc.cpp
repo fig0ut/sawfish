@@ -1,6 +1,11 @@
 #include "app/controller.h"
-#include "daemon/managed_service.grpc.pb.h"
-#include "daemon/started_service.grpc.pb.h"
+// Exercise the Win32 macro collision on every platform. The fake service and
+// real client must link and exchange StartService RPCs with generated code.
+#ifndef StartService
+#define StartService StartServiceW
+#endif
+// Deliberately bypass the wrapper: generated headers must also be safe when
+// included directly by generated implementation files.
 #include "experimental/boxdd/desktop_service.grpc.pb.h"
 #include "fakebackend.h"
 #include <QFile>
@@ -11,7 +16,6 @@
 #include <QtTest>
 #include <atomic>
 #include <condition_variable>
-#include <grpcpp/grpcpp.h>
 #include <iostream>
 #include <mutex>
 

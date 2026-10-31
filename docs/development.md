@@ -143,7 +143,11 @@ The definitions are `daemon/started_service.proto`, `daemon/managed_service.prot
 and `experimental/boxdd/desktop_service.proto`; API version 4 is required. Because
 the protobuf package `daemon` conflicts with POSIX `daemon()` in C++,
 `cmake/namespace_proto.py` changes generated C++ namespace tokens to `rostra_rpc`.
-Wire descriptors and gRPC method paths remain unchanged.
+It also removes the Windows `StartService` macro after platform includes in both
+the generated desktop RPC header and implementation. Wire descriptors and gRPC
+method paths remain unchanged. Non-Windows test builds inject `StartServiceA`
+into the generated implementation; the RPC suite injects `StartServiceW` before
+including the generated header. Both must link and exchange the same RPCs.
 
 | Operation | Rostra API |
 | --- | --- |
@@ -368,7 +372,12 @@ Existing Sawfish release assets are not silently overwritten.
    and required owned command interface in a clean checkout.
 2. Install Qt **6.8.3** with aqtinstall **3.3.0**. Build gRPC **1.84.0**, pinned by
    commit, with matching Protobuf and dependencies. These C++ libraries are
-   static; Qt stays dynamic. Cache SDK/dependencies separately per target.
+   static; Qt stays dynamic. Use four parallel compile jobs on hosted runners.
+   Save Qt and gRPC caches immediately after each successful installation, so a
+   later app build/test failure does not discard them. gRPC cache keys include
+   the runner, architecture, compiler version, and
+   [`scripts/build_grpc.py`](../scripts/build_grpc.py) recipe; changes to app
+   build or packaging logic do not invalidate the dependency cache.
 3. Build the core with Go **1.26.10**, Rostra's tags/linker flags, and its Windows
    ARM64 toolchain patch. Check JSON version/API; build the GUI in Release mode.
 4. Run every registered CTest suite; skips fail CI. Retain test/build diagnostics,
@@ -376,6 +385,10 @@ Existing Sawfish release assets are not silently overwritten.
 5. Stage runtime libraries/plugins, core, documentation, licenses, and
    `build-info.json`. Check ELF/PE architectures, launch the installed GUI without
    the SDK's library/plugin paths, and test IPC against the packaged core.
+   Force text output for `--version` so Windows cannot wait on a Qt message box;
+   require the expected version within 30 seconds. Bound the packaged-core test
+   to 90 seconds and retain its console/text/JUnit output. The packaging step has
+   an overall 10-minute limit.
 6. Create/upload archives. For published releases, attach all four only after
    the full matrix succeeds. GitHub generates their SHA-256 digests.
 
@@ -397,6 +410,14 @@ another desktop core build. Sawfish's GUI release process is independent.
 
 Run `ctest --test-dir build --output-on-failure` after building. Set
 `SAWFISH_TEST_BACKEND` if the core is not adjacent to the test executable.
+CTest forces Qt Test output to the console, including on Windows runners, and
+also writes per-suite text and JUnit reports under `build/Testing/QtTest/`.
+The existing diagnostics artifact retains these reports when a test fails.
+On Windows, CTest points the headless GUI tests at `%SystemRoot%/Fonts`, because
+Qt's offscreen plugin uses FreeType and does not discover Windows fonts itself.
+Profile round-trip tests run on every platform; POSIX owner/group permission
+assertions run only on Unix, since Qt's Windows permission flags do not express
+those access rules.
 
 | Suite | Coverage | Platforms |
 | --- | --- | --- |

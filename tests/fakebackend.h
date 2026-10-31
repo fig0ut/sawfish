@@ -1,13 +1,10 @@
 #pragma once
-#include "daemon/managed_service.grpc.pb.h"
-#include "daemon/started_service.grpc.pb.h"
-#include "experimental/boxdd/desktop_service.grpc.pb.h"
+#include "backend/rpcprotocol.h"
 #include <QSet>
 #include <QString>
 #include <QThread>
 #include <atomic>
 #include <condition_variable>
-#include <grpcpp/grpcpp.h>
 #include <mutex>
 
 using Empty = google::protobuf::Empty;

@@ -46,11 +46,18 @@ add_custom_command(OUTPUT ${PROTO_SOURCES}
 add_library(sawfish_proto STATIC ${PROTO_SOURCES})
 target_include_directories(sawfish_proto PUBLIC "${PROTO_OUTPUT}")
 target_link_libraries(sawfish_proto PUBLIC protobuf::libprotobuf gRPC::grpc++)
+if(BUILD_TESTING AND NOT WIN32)
+    # Reproduce the Windows SDK alias in the separately compiled implementation,
+    # not only its callers. This must still link to the normal StartService RPC.
+    set_source_files_properties("${PROTO_OUTPUT}/experimental/boxdd/desktop_service.grpc.pb.cc"
+        PROPERTIES COMPILE_DEFINITIONS "StartService=StartServiceA")
+endif()
 
 add_library(sawfish_core STATIC
     backend/coreupdater.cpp backend/coreupdater.h
     backend/processcpu.cpp backend/processcpu.h
-    backend/rpcclient.cpp backend/rpcclient.h backend/workerprocess.cpp backend/workerprocess.h
+    backend/rpcclient.cpp backend/rpcclient.h backend/rpcprotocol.h
+    backend/workerprocess.cpp backend/workerprocess.h
     app/controller.cpp app/controller.h models/logmodel.cpp models/logmodel.h
     backend/connectionstate.cpp backend/connectionstate.h models/connectionmodel.cpp models/connectionmodel.h models/format.h
     models/profilestore.cpp models/profilestore.h models/groupmodel.cpp models/groupmodel.h
@@ -84,42 +91,62 @@ target_compile_definitions(sawfish PRIVATE SAWFISH_VERSION="${SAWFISH_VERSION}")
 target_compile_options(sawfish PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W4> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>)
 if(BUILD_TESTING)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+    set(SAWFISH_TEST_LOG_DIR "${CMAKE_CURRENT_BINARY_DIR}/Testing/QtTest")
+    file(MAKE_DIRECTORY "${SAWFISH_TEST_LOG_DIR}")
+    function(sawfish_add_test name target)
+        # Keep assertion details even when Windows has no attached console.
+        add_test(NAME ${name} COMMAND ${target}
+            -o -,txt
+            -o "${SAWFISH_TEST_LOG_DIR}/${name}.txt,txt"
+            -o "${SAWFISH_TEST_LOG_DIR}/${name}.xml,junitxml")
+    endfunction()
     qt_add_executable(sawfish_desktop_tests tests/test_desktop.cpp)
     target_link_libraries(sawfish_desktop_tests PRIVATE sawfish_core Qt::Test)
-    add_test(NAME sawfish_desktop COMMAND sawfish_desktop_tests)
+    sawfish_add_test(sawfish_desktop sawfish_desktop_tests)
     set_tests_properties(sawfish_desktop PROPERTIES TIMEOUT 60)
     qt_add_executable(sawfish_update_tests tests/test_updates.cpp)
     target_link_libraries(sawfish_update_tests PRIVATE sawfish_core Qt::Test)
-    add_test(NAME sawfish_updates COMMAND sawfish_update_tests)
+    sawfish_add_test(sawfish_updates sawfish_update_tests)
     set_tests_properties(sawfish_updates PROPERTIES TIMEOUT 180)
     qt_add_executable(sawfish_tests tests/test_core.cpp)
     # The model tester checks GUI role types, including QPixmap.
     target_link_libraries(sawfish_tests PRIVATE sawfish_core Qt::Gui Qt::Test)
-    add_test(NAME sawfish_core COMMAND sawfish_tests)
+    sawfish_add_test(sawfish_core sawfish_tests)
     set_tests_properties(sawfish_core PROPERTIES TIMEOUT 45 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     qt_add_executable(sawfish_rpc_tests tests/test_rpc.cpp)
     target_link_libraries(sawfish_rpc_tests PRIVATE sawfish_core Qt::Test)
-    add_test(NAME sawfish_rpc COMMAND sawfish_rpc_tests)
+    sawfish_add_test(sawfish_rpc sawfish_rpc_tests)
     set_tests_properties(sawfish_rpc PROPERTIES TIMEOUT 60)
     qt_add_executable(sawfish_ui_tests tests/test_ui.cpp)
     target_link_libraries(sawfish_ui_tests PRIVATE sawfish_widgets Qt::Test)
-    add_test(NAME sawfish_ui COMMAND sawfish_ui_tests)
+    sawfish_add_test(sawfish_ui sawfish_ui_tests)
     set_tests_properties(sawfish_ui PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     qt_add_executable(sawfish_dragdrop_tests tests/test_dragdrop.cpp)
     target_link_libraries(sawfish_dragdrop_tests PRIVATE sawfish_widgets Qt::Test)
-    add_test(NAME sawfish_dragdrop COMMAND sawfish_dragdrop_tests)
+    sawfish_add_test(sawfish_dragdrop sawfish_dragdrop_tests)
     set_tests_properties(sawfish_dragdrop PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=minimal")
     # These older suites exercise Linux run-mode authentication and /proc.
     # The desktop and update suites above exercise the native Windows path too.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     qt_add_executable(sawfish_backend_tests tests/test_backend.cpp)
     target_link_libraries(sawfish_backend_tests PRIVATE sawfish_core Qt::Test)
-    add_test(NAME sawfish_backend COMMAND sawfish_backend_tests)
+    sawfish_add_test(sawfish_backend sawfish_backend_tests)
     set_tests_properties(sawfish_backend PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
     qt_add_executable(sawfish_lifecycle_tests tests/test_lifecycle.cpp)
     target_link_libraries(sawfish_lifecycle_tests PRIVATE sawfish_core Qt::Test)
-    add_test(NAME sawfish_lifecycle COMMAND sawfish_lifecycle_tests)
+    sawfish_add_test(sawfish_lifecycle sawfish_lifecycle_tests)
     set_tests_properties(sawfish_lifecycle PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
+    endif()
+    # Qt Test otherwise sends plain-text output to OutputDebugString on Windows
+    # CI. Append so the offscreen/minimal platform settings above remain active.
+    get_property(sawfish_tests DIRECTORY PROPERTY TESTS)
+    set_property(TEST ${sawfish_tests} APPEND PROPERTY ENVIRONMENT "QT_FORCE_STDERR_LOGGING=1")
+    if(WIN32)
+        # The offscreen plugin uses FreeType, not Windows font discovery. Qt no
+        # longer ships lib/fonts, so use installed system fonts for GUI tests.
+        file(TO_CMAKE_PATH "$ENV{SystemRoot}/Fonts" sawfish_test_font_dir)
+        set_property(TEST sawfish_core sawfish_ui sawfish_dragdrop APPEND PROPERTY
+            ENVIRONMENT "QT_QPA_FONTDIR=${sawfish_test_font_dir}")
     endif()
 endif()
 install(TARGETS sawfish BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

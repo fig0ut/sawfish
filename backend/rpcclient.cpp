@@ -1,13 +1,10 @@
 #include "rpcclient.h"
-#include "daemon/managed_service.grpc.pb.h"
-#include "daemon/started_service.grpc.pb.h"
-#include "experimental/boxdd/desktop_service.grpc.pb.h"
+#include "rpcprotocol.h"
 #include <QDir>
 #include <QFileInfo>
 #include <algorithm>
 #include <chrono>
 #include <deque>
-#include <grpcpp/grpcpp.h>
 #include <mutex>
 #include <optional>
 #include <utility>
