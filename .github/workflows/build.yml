@@ -31,6 +31,8 @@ jobs:
         env:
           SAWFISH_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: python3 scripts/ci.py metadata
+      - name: Test package metadata and release recipes
+        run: python3 -m unittest discover -s tests -p 'test_packaging.py' -v
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: ${{ steps.metadata.outputs.rostra_repository }}
@@ -121,9 +123,9 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build patchelf libgl1-mesa-dev libegl1-mesa-dev \
+          sudo apt-get install -y ninja-build patchelf dpkg-dev file desktop-file-utils libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
-            libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 \
+            libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-shape0 \
             libxcb-xkb1 libfontconfig1 libdbus-1-3 libx11-xcb1 libwayland-client0
       - name: Restore Qt SDK
         id: qt-cache
@@ -174,6 +176,16 @@ jobs:
       - name: Package and smoke-test
         timeout-minutes: 10
         run: python scripts/ci.py package --rostra .ci/rostra
+      - name: Test Ubuntu installation, upgrade and removal
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=$PWD/dist,dst=/packages,readonly" \
+            --mount "type=bind,src=$PWD/packaging/linux/test-install.sh,dst=/test-install.sh,readonly" \
+            ubuntu:24.04 bash /test-install.sh \
+            "/packages/sawfish-${SAWFISH_VERSION}-${SAWFISH_TARGET}.deb" "$SAWFISH_VERSION"
       - name: Upload package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -181,6 +193,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
           if-no-files-found: error
           retention-days: 14
       - name: Upload diagnostics
@@ -205,6 +218,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: sawfish-*
@@ -217,4 +233,12 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           cd dist
-          gh release upload "$RELEASE_TAG" -- *.tar.gz *.zip
+          gh release upload "$RELEASE_TAG" -- *.tar.gz *.zip *.deb
+      - name: Publish Arch recipe using GitHub asset digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 scripts/release_arch.py --repository "$GH_REPO" --tag "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" dist/PKGBUILD

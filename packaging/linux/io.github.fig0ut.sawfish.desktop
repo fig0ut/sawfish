@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Sawfish
+GenericName=Proxy Client
+Comment=Manage Rostra profiles, proxies, and connections
+Exec=sawfish
+TryExec=sawfish
+Icon=io.github.fig0ut.sawfish
+Terminal=false
+Categories=Network;Qt;
+Keywords=proxy;rostra;
+StartupNotify=true
+StartupWMClass=Sawfish

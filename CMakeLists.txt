@@ -150,6 +150,13 @@ if(BUILD_TESTING)
     endif()
 endif()
 install(TARGETS sawfish BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    install(FILES packaging/linux/io.github.fig0ut.sawfish.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES assets/sawfish.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+        RENAME io.github.fig0ut.sawfish.svg)
+endif()
 set(SAWFISH_ROSTRA_EXECUTABLE "" CACHE FILEPATH "Matching desktop core to bundle beside Sawfish")
 if(SAWFISH_ROSTRA_EXECUTABLE)
     install(PROGRAMS "${SAWFISH_ROSTRA_EXECUTABLE}" DESTINATION ${CMAKE_INSTALL_BINDIR}

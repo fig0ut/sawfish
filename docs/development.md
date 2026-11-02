@@ -111,6 +111,7 @@ library. Custom feature tags can require additional libraries.
 | `scripts/`, `.github/` | Development commands and build/test/package workflow. |
 | `tests/` | Model, RPC, UI, update, and real-process integration tests. |
 | `assets/heroicons/` | Icon sources, attribution, license, and checksums. |
+| `packaging/` | Desktop launcher, Linux installation checks, and Arch recipe template. |
 | `docs/` | This development guide. |
 
 Keep protocol handling and state transitions out of page classes. Model changes
@@ -353,8 +354,8 @@ that users can later update independently.
 
 | Target | Native runner | Archive |
 | --- | --- | --- |
-| Linux amd64 | `ubuntu-24.04` | `.tar.gz` |
-| Linux arm64 | `ubuntu-24.04-arm` | `.tar.gz` |
+| Linux amd64 | `ubuntu-24.04` | `.tar.gz`, `.deb` |
+| Linux arm64 | `ubuntu-24.04-arm` | `.tar.gz`, `.deb` |
 | Windows amd64 | `windows-2022`, MSVC | `.zip` |
 | Windows arm64 | `windows-11-arm`, MSVC | `.zip` |
 
@@ -390,13 +391,39 @@ Existing Sawfish release assets are not silently overwritten.
    to 90 seconds and retain its console/text/JUnit output. The packaging step has
    an overall 10-minute limit.
 6. Create/upload archives. For published releases, attach all four only after
-   the full matrix succeeds. GitHub generates their SHA-256 digests.
+   the full matrix succeeds. Also create Linux `.deb` packages with CPack and
+   `dpkg-shlibdeps`; runtime dependencies are derived on the Ubuntu build host.
+   Test installation, an upgrade from a synthetic older package, and removal in
+   a fresh Ubuntu 24.04 container. The test launches the installed app as an
+   unprivileged user and checks that removal preserves user data.
+7. After uploading both Linux archives, generate/upload an Arch `PKGBUILD` using
+   the SHA-256 digests supplied by GitHub's release API. Missing digests fail this
+   step; no unchecked or independently calculated replacement is used.
+
+Linux packages place the deployed bundle in `/opt/sawfish`, a symlink in
+`/usr/bin/sawfish`, and the launcher/icon under `/usr/share`. Qt plugins and ICU
+remain private to the bundle. The desktop ID is `io.github.fig0ut.sawfish` and
+matches `QGuiApplication::desktopFileName()`. The installed core remains beside
+the GUI; independent core downloads remain in the user's application data.
+Package installation does not enable a service, autostart, or system proxy.
+
+Debian prereleases use `~` (for example `0.1.0~alpha.2-1`) so the final release
+upgrades them. Arch recipes use `0.1.0alpha.2` and preserve the original release
+tag in download URLs. `scripts/release_arch.py --tag v0.1.0-alpha.2` can regenerate
+the recipe from a published release. Run `makepkg --printsrcinfo > .SRCINFO` if
+preparing an AUR submission; the workflow does not submit to AUR.
+
+`assets/sawfish.svg` is the static desktop icon based on the existing fish
+silhouette. The tray continues to use its themed, state-dependent rendering.
 
 The driver's commands are `metadata`, `verify-core`, `environment`, `dependencies`,
 `build`, `test`, and `package`. `SAWFISH_BUILD_DIR` allows an isolated local build;
 the workflow supplies `SAWFISH_QT_PREFIX`, `SAWFISH_QT_VERSION`, `SAWFISH_VERSION`,
 and `SAWFISH_TARGET`. The source README and `docs/development.md` are included in
 archive bundles with the same directory layout.
+For local archive checks on a non-Debian development host, use
+`scripts/ci.py package --archive-only --rostra ../rostra`. CI always builds the
+native Linux packages and requires `dpkg-dev`, `file`, and `desktop-file-utils`.
 
 Rostra's [Build workflow](https://github.com/fig0ut/rostra/blob/testing/.github/workflows/build.yml)
 builds independent assets in `build_desktop`. Pushes to `stable`, `testing`, and
@@ -440,6 +467,8 @@ proxy settings. URL/updater fixtures use local HTTP servers, not public release
 installs. GUI tests use offscreen/minimal platforms and reject unexpected Qt
 warnings, allowing the offscreen plugin's known dialog-size warning. Real tray
 integration, suspend/resume, and privileged networking need desktop/VM checks.
+Package metadata/recipe tests run with
+`python3 -m unittest discover -s tests -p 'test_packaging.py' -v` before CI builds.
 
 ## Remaining work
 

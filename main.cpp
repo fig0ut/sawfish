@@ -14,6 +14,7 @@ int main(int argc, char* argv[]) {
     app.setQuitOnLastWindowClosed(false);
     QCoreApplication::setOrganizationName("Sawfish");
     QCoreApplication::setApplicationName("Sawfish");
+    QGuiApplication::setDesktopFileName("io.github.fig0ut.sawfish");
     QCoreApplication::setApplicationVersion(QStringLiteral(SAWFISH_VERSION));
     QCommandLineParser parser;
     parser.setApplicationDescription("Desktop client for Rostra");

@@ -14,6 +14,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from build_grpc import GRPC_COMMIT, GRPC_PREFIX, GRPC_VERSION, dependencies
+from package_linux import package_deb
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = Path(os.environ.get("SAWFISH_BUILD_DIR", ROOT / "build")).resolve()
@@ -166,7 +167,7 @@ def verify_architecture(binary, target):
             raise ValueError(f"Executable architecture does not match {target}: {binary}")
 
 
-def package(source):
+def package(source, archive_only=False):
     verify_core(source)
     version = checked_version(os.environ["SAWFISH_VERSION"])
     target = os.environ["SAWFISH_TARGET"]
@@ -250,6 +251,8 @@ def package(source):
     output.mkdir(exist_ok=True)
     shutil.make_archive(str(output / name), "zip" if WINDOWS else "gztar",
                         root_dir=stage.parent, base_dir=name)
+    if not WINDOWS and not archive_only:
+        package_deb(stage, version, target, BUILD / "debian", output)
 
 
 def main():
@@ -258,12 +261,18 @@ def main():
                                             "build", "test", "package"))
     parser.add_argument("--rostra", type=Path, default=ROOT / ".ci/rostra")
     parser.add_argument("--require-clean", action="store_true")
+    parser.add_argument("--archive-only", action="store_true",
+                        help="Package a development archive without native installers")
     args = parser.parse_args()
+    if args.archive_only and args.command != "package":
+        parser.error("--archive-only is only valid with package")
     source = args.rostra.resolve()
     if args.command == "verify-core":
         verify_core(source, args.require_clean)
-    elif args.command in ("build", "package"):
-        {"build": build, "package": package}[args.command](source)
+    elif args.command == "build":
+        build(source)
+    elif args.command == "package":
+        package(source, args.archive_only)
     else:
         {"metadata": metadata, "environment": environment, "dependencies": dependencies,
          "test": test}[args.command]()
