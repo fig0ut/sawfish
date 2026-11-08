@@ -1,10 +1,10 @@
-# Generated from the published release and GitHub's asset digests.
+# Internal recipe: the CI build supplies the already tested installation tree.
 pkgname=sawfish-bin
 pkgver=@PKGVER@
 pkgrel=1
 pkgdesc='Qt desktop client for Rostra'
 arch=('x86_64' 'aarch64')
-url='https://github.com/@REPOSITORY@'
+url='https://github.com/fig0ut/sawfish'
 license=('GPL-3.0-or-later')
 depends=('glibc' 'gcc-libs' 'fontconfig' 'freetype2' 'dbus' 'libglvnd'
          'libx11' 'libxcb' 'libxkbcommon-x11' 'xcb-util-cursor' 'xcb-util-image'
@@ -13,23 +13,7 @@ depends=('glibc' 'gcc-libs' 'fontconfig' 'freetype2' 'dbus' 'libglvnd'
 provides=('sawfish')
 conflicts=('sawfish')
 options=('!strip' '!debug')
-_release='@VERSION@'
-source_x86_64=('@AMD64_URL@')
-sha256sums_x86_64=('@AMD64_SHA256@')
-source_aarch64=('@ARM64_URL@')
-sha256sums_aarch64=('@ARM64_SHA256@')
 
 package() {
-    local asset_arch=amd64
-    [[ "$CARCH" == aarch64 ]] && asset_arch=arm64
-    local bundle="$srcdir/sawfish-${_release}-linux-${asset_arch}"
-    local desktop_id=io.github.fig0ut.sawfish
-    install -d "$pkgdir/opt" "$pkgdir/usr/bin" "$pkgdir/usr/share/licenses/sawfish-bin"
-    cp -a "$bundle" "$pkgdir/opt/sawfish"
-    ln -s /opt/sawfish/bin/sawfish "$pkgdir/usr/bin/sawfish"
-    install -Dm644 "$bundle/share/applications/$desktop_id.desktop" \
-        "$pkgdir/usr/share/applications/$desktop_id.desktop"
-    install -Dm644 "$bundle/share/icons/hicolor/scalable/apps/$desktop_id.svg" \
-        "$pkgdir/usr/share/icons/hicolor/scalable/apps/$desktop_id.svg"
-    ln -s /opt/sawfish/share/licenses "$pkgdir/usr/share/licenses/sawfish-bin/bundled"
+    cp -a "${SAWFISH_PACKAGE_ROOT:?Staged package root is required}/." "$pkgdir/"
 }

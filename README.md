@@ -37,17 +37,28 @@ setup and privileged TUN integration are not implemented yet.
 
 ### Linux packages
 
-Releases built with the new packaging workflow also provide a `.deb` and an Arch
-`PKGBUILD`. These are not included in the original `v0.1.0-alpha.1` release.
+New releases provide ready-to-install `.deb`, `.rpm`, and `.pkg.tar.zst` packages.
+The original `v0.1.0-alpha.1` has archives only; `v0.1.0-alpha.2` also has `.deb`
+packages and an Arch recipe. The recipe is now used internally by CI.
 
 On Ubuntu 24.04, download the `.deb` for your architecture and install it with
 `sudo apt install ./sawfish-<version>-linux-<architecture>.deb`. Start **Sawfish**
 from the applications menu or run `sawfish`. Remove it with `sudo apt remove sawfish`.
 
-On Arch, download `PKGBUILD` from the same release into an empty directory,
-review it, then run `makepkg -si` as your normal user. It downloads the matching
-Linux bundle and verifies GitHub's SHA-256 digest; it does not compile Qt or gRPC.
-Remove it with `sudo pacman -R sawfish-bin`. The recipe is not yet published to AUR.
+On Fedora 44, install the matching `.rpm` with
+`sudo dnf install ./sawfish-<version>-linux-<architecture>.rpm`.
+Remove it with `sudo dnf remove sawfish`. Other RPM distributions are not yet
+tested.
+
+On Arch / Arch Linux ARM, install the matching `.pkg.tar.zst` with
+`sudo pacman -U ./sawfish-<version>-linux-<architecture>.pkg.tar.zst`.
+Remove it with `sudo pacman -R sawfish-bin`. No compilation is needed.
+
+Signed releases include an embedded `debsigs` signature for `.deb`, an embedded
+RPM signature, a `.sig` for Arch packages, and an `.asc` for Linux archives.
+Before installation, follow the [signature verification instructions](docs/development.md#verifying-downloads)
+to check the public-key fingerprint and set up the appropriate verifier.
+Installing a local `.deb` with APT does not automatically verify its embedded signature.
 
 Packages preserve profiles, settings, and downloaded cores when upgraded or
 removed. Sawfish GUI updates currently require installing a newer package or

@@ -14,7 +14,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from build_grpc import GRPC_COMMIT, GRPC_PREFIX, GRPC_VERSION, dependencies
-from package_linux import package_deb
+from package_linux import package_arch, package_deb, package_rpm
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = Path(os.environ.get("SAWFISH_BUILD_DIR", ROOT / "build")).resolve()
@@ -253,6 +253,8 @@ def package(source, archive_only=False):
                         root_dir=stage.parent, base_dir=name)
     if not WINDOWS and not archive_only:
         package_deb(stage, version, target, BUILD / "debian", output)
+        package_rpm(stage, version, target, BUILD / "rpm", output)
+        package_arch(stage, version, target, BUILD / "arch", output)
 
 
 def main():

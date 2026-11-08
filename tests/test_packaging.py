@@ -1,73 +1,59 @@
-import copy
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from package_linux import debian_version
-from release_arch import render_pkgbuild
-
-
-def published_release():
-    version = "0.1.0-alpha.2"
-    assets = []
-    for arch, digit in (("amd64", "a"), ("arm64", "b")):
-        name = f"sawfish-{version}-linux-{arch}.tar.gz"
-        assets.append({"name": name, "state": "uploaded", "digest": "sha256:" + digit * 64,
-                       "browser_download_url":
-                           f"https://github.com/fig0ut/sawfish/releases/download/v{version}/{name}"})
-    return {"tag_name": "v" + version, "draft": False, "assets": assets}
+from package_linux import arch_version, debian_version, native_architecture, render_pkgbuild
+from sign_linux import policy_xml, release_files, signing_subkey
 
 
 class PackagingTest(unittest.TestCase):
     def test_prerelease_and_final_versions(self):
-        for original, expected in (("0.1.0", "0.1.0"),
-                                   ("0.1.0-alpha.2", "0.1.0~alpha.2"),
-                                   ("1.2.3-rc.1+build.4", "1.2.3~rc.1+build.4")):
+        for original, deb, arch in (("0.1.0", "0.1.0", "0.1.0"),
+                                    ("0.1.0-alpha.2", "0.1.0~alpha.2", "0.1.0alpha.2"),
+                                    ("1.2.3-rc.1+build.4", "1.2.3~rc.1+build.4", "1.2.3rc.1+build.4")):
             with self.subTest(original=original):
-                self.assertEqual(debian_version(original), expected)
+                self.assertEqual(debian_version(original), deb)
+                self.assertEqual(arch_version(original), arch)
 
     def test_versions_cannot_inject_recipe_code(self):
         for version in ("v0.1.0", "1.0", "0.1.0;id", "0.1.0\nmalicious=1", "0.1.0-$(id)"):
             with self.subTest(version=version), self.assertRaises(ValueError):
-                debian_version(version)
+                render_pkgbuild(version)
 
-    def test_arch_uses_both_github_digests(self):
-        recipe = render_pkgbuild(published_release(), "fig0ut/sawfish")
-        self.assertIn("pkgver=0.1.0alpha.2\n", recipe)
-        self.assertIn("sha256sums_x86_64=('" + "a" * 64 + "')", recipe)
-        self.assertIn("sha256sums_aarch64=('" + "b" * 64 + "')", recipe)
+    def test_arch_recipe_uses_only_local_payload(self):
+        recipe = render_pkgbuild("0.1.0-alpha.3")
+        self.assertIn("pkgver=0.1.0alpha.3\n", recipe)
+        self.assertIn("SAWFISH_PACKAGE_ROOT", recipe)
+        self.assertNotIn("releases/download", recipe)
         self.assertNotIn("@", recipe)
-        self.assertNotIn("SKIP", recipe)
+        self.assertEqual(native_architecture("linux-arm64"), "aarch64")
+        with self.assertRaises(ValueError):
+            native_architecture("windows-amd64")
 
-    def test_arch_rejects_incomplete_or_untrusted_assets(self):
-        original = published_release()
-        for changes in ({"digest": None}, {"digest": "sha256:bad"},
-                        {"state": "new"}, {"browser_download_url": "https://example.org/file"}):
-            release = copy.deepcopy(original)
-            release["assets"][0].update(changes)
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                render_pkgbuild(release, "fig0ut/sawfish")
-        for assets in (original["assets"][:1], original["assets"] + original["assets"][:1]):
+    def test_signing_requires_complete_release(self):
+        with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
-                render_pkgbuild(original | {"assets": assets}, "fig0ut/sawfish")
+                release_files(directory, "0.1.0")
+            for arch in ("amd64", "arm64"):
+                for extension in ("deb", "rpm", "pkg.tar.zst", "tar.gz"):
+                    (Path(directory) / f"sawfish-0.1.0-linux-{arch}.{extension}").touch()
+            self.assertEqual(len(release_files(directory, "0.1.0")), 8)
 
-    def test_arch_accepts_encoded_build_metadata(self):
-        release = published_release()
-        release["tag_name"] += "+build.4"
-        for asset in release["assets"]:
-            asset["name"] = asset["name"].replace("alpha.2", "alpha.2+build.4")
-            asset["browser_download_url"] = asset["browser_download_url"].replace(
-                "alpha.2", "alpha.2%2Bbuild.4")
-        recipe = render_pkgbuild(release, "fig0ut/sawfish")
-        self.assertIn("pkgver=0.1.0alpha.2+build.4\n", recipe)
-        self.assertIn("alpha.2%2Bbuild.4", recipe)
-
-    def test_arch_rejects_drafts_and_bad_tags(self):
-        for changes in ({"draft": True}, {"tag_name": "main"},
-                        {"tag_name": "v0.1.0-';id;#"}):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                render_pkgbuild(published_release() | changes, "fig0ut/sawfish")
+    def test_signing_key_is_pinned_and_primary_is_offline(self):
+        primary, subkey = "A" * 40, "B" * 40
+        def record(kind, capability, secret):
+            fields = [kind, "u", "4096", "1", "", "1", "", "", "", "", "", capability, "", "", secret]
+            return ":".join(fields) + "\n"
+        listing = (record("sec", "cSC", "#") + "fpr:::::::::" + primary + ":\n" +
+                   record("ssb", "s", "+") + "fpr:::::::::" + subkey + ":\n")
+        self.assertEqual(signing_subkey(listing, primary), subkey)
+        for invalid, expected in ((listing, "C" * 40), (listing.replace("#", "+"), primary),
+                                  (listing.replace(":s:", ":e:"), primary)):
+            with self.assertRaises(ValueError):
+                signing_subkey(invalid, expected)
+        self.assertIn(subkey[-16:], policy_xml(subkey))
 
 
 if __name__ == "__main__":

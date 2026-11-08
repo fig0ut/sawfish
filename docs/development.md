@@ -354,8 +354,8 @@ that users can later update independently.
 
 | Target | Native runner | Archive |
 | --- | --- | --- |
-| Linux amd64 | `ubuntu-24.04` | `.tar.gz`, `.deb` |
-| Linux arm64 | `ubuntu-24.04-arm` | `.tar.gz`, `.deb` |
+| Linux amd64 | `ubuntu-24.04` | `.tar.gz`, `.deb`, `.rpm`, `.pkg.tar.zst` |
+| Linux arm64 | `ubuntu-24.04-arm` | `.tar.gz`, `.deb`, `.rpm`, `.pkg.tar.zst` |
 | Windows amd64 | `windows-2022`, MSVC | `.zip` |
 | Windows arm64 | `windows-11-arm`, MSVC | `.zip` |
 
@@ -364,7 +364,8 @@ Packages are named `sawfish-<version>-<os>-<arch>`. Linux bundles target Ubuntu
 distribution. Windows bundles include Qt deployment and the matching `.exe` core.
 Release tags use `vMAJOR.MINOR.PATCH`, optionally with a prerelease suffix;
 development versions use the CMake version plus `-dev.<commit>`. Build jobs have
-read-only permissions; only release publication has repository write permission.
+read-only permissions; only release publication has repository write permission
+and access to the `linux-release` environment's signing subkey.
 Existing Sawfish release assets are not silently overwritten.
 
 [`scripts/ci.py`](../scripts/ci.py) implements the shared pipeline:
@@ -389,16 +390,32 @@ Existing Sawfish release assets are not silently overwritten.
    Force text output for `--version` so Windows cannot wait on a Qt message box;
    require the expected version within 30 seconds. Bound the packaged-core test
    to 90 seconds and retain its console/text/JUnit output. The packaging step has
-   an overall 10-minute limit.
-6. Create/upload archives. For published releases, attach all four only after
-   the full matrix succeeds. Also create Linux `.deb` packages with CPack and
-   `dpkg-shlibdeps`; runtime dependencies are derived on the Ubuntu build host.
-   Test installation, an upgrade from a synthetic older package, and removal in
-   a fresh Ubuntu 24.04 container. The test launches the installed app as an
-   unprivileged user and checks that removal preserves user data.
-7. After uploading both Linux archives, generate/upload an Arch `PKGBUILD` using
-   the SHA-256 digests supplied by GitHub's release API. Missing digests fail this
-   step; no unchecked or independently calculated replacement is used.
+   an overall 15-minute limit.
+6. Create archives and native Linux packages from the same staged bundle; no
+   additional Qt/gRPC builds. CPack creates DEB/RPM packages with automatic ELF
+   dependency detection. RPM dependencies exclude privately bundled libraries,
+   which are not advertised as system-wide providers. `makepkg` uses the internal
+   `packaging/arch/PKGBUILD.in` and local staging tree; no release download is
+   needed and no `PKGBUILD` is published. Package architecture names are mapped
+   to `amd64`/`arm64` for DEB and `x86_64`/`aarch64` for RPM/Arch.
+7. Test installation, upgrade from a synthetic older package, launch as an
+   unprivileged user, removal, and user-data preservation in clean Ubuntu 24.04,
+   Fedora 44, and Arch environments. ARM uses the official Arch Linux ARM root
+   filesystem on the native ARM runner. RPM compatibility with other distributions
+   is not claimed. `scripts/test_linux_packages.sh` runs these checks using Docker.
+   The disposable Arch test disables pacman's download filesystem sandbox because
+   hosted ARM containers can reject Landlock rules with `EPERM`. Older pacman
+   versions use the combined `--disable-sandbox` option. Package signature and
+   dependency checks remain enabled; the container keeps its normal isolation.
+8. A separate job signs real amd64 artifacts with a temporary, passphrase-protected
+   test subkey, then verifies all four formats using only public keys. It checks
+   rejection of unsigned/modified packages, missing Debian trust policy, and an
+   unrelated public key in the Debian keyring.
+9. For a published release only, import the configured release signing subkey in
+   an isolated temporary keyring. Sign and verify every Linux asset before any
+   upload. Missing keys or failed verification fail publication. Normal CI artifacts
+   are unsigned. GitHub generates digests for the final uploaded bytes; signing
+   happens first because embedded DEB/RPM signatures change those bytes.
 
 Linux packages place the deployed bundle in `/opt/sawfish`, a symlink in
 `/usr/bin/sawfish`, and the launcher/icon under `/usr/share`. Qt plugins and ICU
@@ -407,11 +424,10 @@ matches `QGuiApplication::desktopFileName()`. The installed core remains beside
 the GUI; independent core downloads remain in the user's application data.
 Package installation does not enable a service, autostart, or system proxy.
 
-Debian prereleases use `~` (for example `0.1.0~alpha.2-1`) so the final release
-upgrades them. Arch recipes use `0.1.0alpha.2` and preserve the original release
-tag in download URLs. `scripts/release_arch.py --tag v0.1.0-alpha.2` can regenerate
-the recipe from a published release. Run `makepkg --printsrcinfo > .SRCINFO` if
-preparing an AUR submission; the workflow does not submit to AUR.
+Debian/RPM prereleases use `~` (for example `0.1.0~alpha.2-1`) so the final release
+upgrades them. Arch uses `0.1.0alpha.2-1`. Uploaded filenames retain the original
+Sawfish version and `linux-amd64` / `linux-arm64` architecture labels. The workflow
+does not submit to AUR or operate an APT/RPM/pacman repository.
 
 `assets/sawfish.svg` is the static desktop icon based on the existing fish
 silhouette. The tray continues to use its themed, state-dependent rendering.
@@ -423,7 +439,142 @@ and `SAWFISH_TARGET`. The source README and `docs/development.md` are included i
 archive bundles with the same directory layout.
 For local archive checks on a non-Debian development host, use
 `scripts/ci.py package --archive-only --rostra ../rostra`. CI always builds the
-native Linux packages and requires `dpkg-dev`, `file`, and `desktop-file-utils`.
+native Linux packages and requires `dpkg-dev`, `file`, `desktop-file-utils`, `rpm`,
+`makepkg`, `pacman-package-manager`, `fakeroot`, `zstd`, and `libarchive-tools`.
+`makepkg` runs as the normal runner user, with dependency checking deferred to
+the clean Arch install test because the build host is Ubuntu.
+`scripts/package_linux.py --help` provides individual packagers for testing an
+already staged bundle.
+
+### Linux release signing
+
+[`scripts/sign_linux.py`](../scripts/sign_linux.py) produces:
+
+| Asset | Signature |
+| --- | --- |
+| `.deb` | Embedded `origin` signature made with `debsigs`. |
+| `.rpm` | Embedded signature made with `rpmsign`. |
+| `.pkg.tar.zst` | Detached binary OpenPGP `.sig`. |
+| Linux `.tar.gz` | Detached armored OpenPGP `.asc`. |
+
+The release also includes `sawfish-release-key.asc`, its primary fingerprint in
+`sawfish-release-key-fingerprint.txt`, and a signed `sawfish-debsig-policy.tar.gz`
+containing the Debian verification policy and public keyring. Windows packages
+remain unsigned; Authenticode is a separate future step.
+
+The signer requires a pinned primary fingerprint, rejects exports containing
+the primary private key, and selects the newest usable secret signing subkey.
+Passphrases stay in a mode-600 temporary file inside a mode-700 temporary keyring;
+they are not command-line arguments. GPG agents and temporary keyrings are removed
+on exit. Verification uses separate public-only GPG and RPM keyrings.
+
+The Debian policy directory is named after the signing subkey's long ID. Its
+mandatory Verification rule checks the actual `origin` signature against a
+keyring containing only the pinned certificate and its bound subkeys. It omits
+the optional Selection block: Ubuntu 24.04's `debsig-verify` only resolves primary
+keys in Selection/id lookups. This still requires cryptographic signature
+verification; unsigned, modified, or untrusted packages must fail.
+
+Create a dedicated release identity on a trusted computer (preferably offline).
+Replace the example email, choose a strong passphrase when prompted, and keep an
+offline backup of this directory, including `openpgp-revocs.d`:
+
+```sh
+SAWFISH_GPG_DIR="$HOME/.local/share/sawfish-release-gnupg"
+install -d -m 700 "$SAWFISH_GPG_DIR"
+gpg --homedir "$SAWFISH_GPG_DIR" --quick-generate-key \
+  'Sawfish Releases <you@example.com>' rsa4096 cert 2y
+gpg --homedir "$SAWFISH_GPG_DIR" --with-subkey-fingerprint --list-secret-keys
+
+# Copy the full primary fingerprint from the previous command (without spaces).
+SAWFISH_KEY_FPR='YOUR_PRIMARY_FINGERPRINT'
+gpg --homedir "$SAWFISH_GPG_DIR" --quick-add-key "$SAWFISH_KEY_FPR" rsa4096 sign 1y
+
+umask 077
+gpg --homedir "$SAWFISH_GPG_DIR" --armor --export-secret-subkeys "$SAWFISH_KEY_FPR" \
+  > sawfish-ci-subkeys.asc
+gpg --homedir "$SAWFISH_GPG_DIR" --armor --export "$SAWFISH_KEY_FPR" \
+  > sawfish-release-key.asc
+```
+
+Do not put `sawfish-ci-subkeys.asc` in the repository. The exported subkeys are
+still private signing material; the primary private key stays in the offline
+directory. The one-year subkey lifetime requires renewal or rotation before
+expiry. Renew with the offline primary key and replace the CI export/public key.
+
+In GitHub Settings → Environments, create `linux-release` and restrict deployments
+to release tags (`v*`). Configure these environment settings before publishing
+the first release with this workflow:
+
+| Setting | Type | Value |
+| --- | --- | --- |
+| `LINUX_SIGNING_KEY` | Secret | Contents of `sawfish-ci-subkeys.asc`. |
+| `LINUX_SIGNING_PASSPHRASE` | Secret | The signing key's passphrase. |
+| `LINUX_SIGNING_FINGERPRINT` | Variable | Full primary fingerprint. |
+
+From this repository, the CLI equivalents after creating the environment are:
+
+```sh
+gh secret set LINUX_SIGNING_KEY --env linux-release < sawfish-ci-subkeys.asc
+gh secret set LINUX_SIGNING_PASSPHRASE --env linux-release
+gh variable set LINUX_SIGNING_FINGERPRINT --env linux-release --body "$SAWFISH_KEY_FPR"
+```
+
+The passphrase command prompts interactively. Transfer only the subkey export to
+the computer used for GitHub setup. Remove that transfer copy afterwards. Publish
+the public key and fingerprint in a trusted project channel; users should not
+establish trust solely from the fingerprint file beside an unverified download.
+
+### Verifying downloads
+
+First obtain `sawfish-release-key.asc`, display its primary fingerprint, and
+compare it with the maintainer-published fingerprint through a trusted channel:
+
+```sh
+gpg --show-keys --with-fingerprint sawfish-release-key.asc
+gpg --import sawfish-release-key.asc
+```
+
+For Linux archives and Arch packages, keep the signature beside the downloaded
+file and verify before installation:
+
+```sh
+gpg --verify sawfish-VERSION-linux-amd64.tar.gz.asc sawfish-VERSION-linux-amd64.tar.gz
+gpg --verify sawfish-VERSION-linux-amd64.pkg.tar.zst.sig sawfish-VERSION-linux-amd64.pkg.tar.zst
+```
+
+For pacman to trust the signing identity as well, import and locally trust that
+same verified primary fingerprint (use `arm64` filenames on Arch Linux ARM):
+
+```sh
+sudo pacman-key --add sawfish-release-key.asc
+sudo pacman-key --lsign-key YOUR_PRIMARY_FINGERPRINT
+sudo pacman -U ./sawfish-VERSION-linux-amd64.pkg.tar.zst
+```
+
+For RPM, import the verified key and check the embedded signature before installing:
+
+```sh
+sudo rpm --import sawfish-release-key.asc
+rpmkeys --checksig --verbose sawfish-VERSION-linux-amd64.rpm
+sudo dnf install ./sawfish-VERSION-linux-amd64.rpm
+```
+
+Require a signature reported as OK, not only package digests. For DEB, install
+`debsig-verify`, verify the policy archive with the trusted key, and install its
+public policy/keyring before verifying the package:
+
+```sh
+sudo apt install debsig-verify
+gpg --verify sawfish-debsig-policy.tar.gz.asc sawfish-debsig-policy.tar.gz
+sudo tar -xzf sawfish-debsig-policy.tar.gz -C /
+debsig-verify sawfish-VERSION-linux-amd64.deb
+sudo apt install ./sawfish-VERSION-linux-amd64.deb
+```
+
+Stop if signature verification fails. A normal local APT installation does not
+authenticate the embedded signature by itself. A future APT repository will also
+need signed `InRelease` metadata; embedded package signatures do not replace it.
 
 Rostra's [Build workflow](https://github.com/fig0ut/rostra/blob/testing/.github/workflows/build.yml)
 builds independent assets in `build_desktop`. Pushes to `stable`, `testing`, and

@@ -30,6 +30,7 @@ __pycache__/
 *~
 
 # Local environment and OS metadata
+sawfish-ci-subkeys*.asc
 .env
 .env.*
 !.env.example
