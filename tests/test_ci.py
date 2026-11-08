@@ -94,10 +94,57 @@ class CoreCompatibilityTest(unittest.TestCase):
 
     def test_metadata_no_longer_requires_a_core_commit(self):
         output = self.root / "github-output"
-        with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output), "SAWFISH_RELEASE_TAG": "v0.1.0"}):
+        with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output), "SAWFISH_RELEASE_TAG": "v0.1.0",
+                                     "GITHUB_EVENT_NAME": "release"}):
             ci.metadata()
         self.assertEqual(output.read_text().splitlines(),
-                         ["rostra_repository=fig0ut/rostra", "version=0.1.0"])
+                         ["rostra_repository=fig0ut/rostra", "version=0.1.0", "package_checks=true"])
+
+    def package_checks(self, event_name, payload):
+        event = self.root / "event.json"
+        event.write_text(json.dumps(payload), encoding="utf-8")
+        with patch.object(ci, "ROOT", self.source), patch.dict(os.environ, {
+                "GITHUB_EVENT_NAME": event_name, "GITHUB_EVENT_PATH": str(event)}):
+            return ci.package_checks_required()
+
+    def test_application_changes_keep_only_regular_checks(self):
+        base = self.git("rev-parse", "HEAD")
+        (self.source / "main.cpp").write_text("Application change\n", encoding="utf-8")
+        (self.source / "README.md").write_text("Documentation change\n", encoding="utf-8")
+        self.commit()
+        self.assertFalse(self.package_checks("push", {"before": base}))
+        self.assertFalse(self.package_checks("pull_request", {"pull_request": {"base": {"sha": base}}}))
+
+    def test_package_checks_consider_the_whole_push(self):
+        base = self.git("rev-parse", "HEAD")
+        (self.source / "CMakeLists.txt").write_text("Dependency change\n", encoding="utf-8")
+        self.commit()
+        (self.source / "README.md").write_text("Later documentation change\n", encoding="utf-8")
+        self.commit()
+        self.assertTrue(self.package_checks("push", {"before": base}))
+
+    def test_signer_changes_on_pull_requests_get_package_checks(self):
+        base = self.git("rev-parse", "HEAD")
+        (self.source / "scripts").mkdir()
+        (self.source / "scripts/sign_linux.py").write_text("Signing change\n", encoding="utf-8")
+        self.commit()
+        self.assertTrue(self.package_checks("pull_request", {"pull_request": {"base": {"sha": base}}}))
+
+    def test_moving_a_packaging_file_still_gets_package_checks(self):
+        (self.source / "packaging").mkdir()
+        (self.source / "packaging/recipe").write_text("Recipe\n", encoding="utf-8")
+        base = self.commit()
+        self.git("mv", "packaging/recipe", "old-recipe.txt")
+        self.commit()
+        self.assertTrue(self.package_checks("push", {"before": base}))
+
+    def test_release_manual_and_unknown_changes_always_get_package_checks(self):
+        for event, payload in (("release", {}), ("workflow_dispatch", {}), ("push", {}),
+                               ("push", {"before": "0" * 40}),
+                               ("push", {"before": "--invalid-revision"}),
+                               ("push", {"before": "a" * 40})):
+            with self.subTest(event=event, payload=payload):
+                self.assertTrue(self.package_checks(event, payload))
 
 
 if __name__ == "__main__":

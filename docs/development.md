@@ -352,9 +352,18 @@ rebuilding an older package requires checking out the commit in its build info.
 
 | Event | Result |
 | --- | --- |
-| Pull request or push to `main`/`master` | Build, test, package, and retain artifacts. |
-| Manual dispatch | Same checks/artifacts, without release publication. |
+| Pull request or push to `main`/`master` | Build, run application tests, smoke-test packages, and retain artifacts. Run installation/signing tests when build or packaging inputs change. |
+| Manual dispatch | All checks and artifacts, without release publication. |
 | Published release, including prerelease | Build the tag; attach packages after every target passes. |
+
+Every event builds all four targets and all native package formats. The prepare
+job compares the whole push or pull request, including deletions and renames.
+Changes to workflows, scripts, packaging, CMake, vendored protocols, packaging
+tests, `.gitattributes`, or the desktop icon enable the Linux installation and
+test-key signing checks. Releases, manual runs, and unavailable change history
+always enable these checks. Ordinary application/docs changes omit those
+container setups and the extra signing job. Runtime/API tests still exercise
+the resolved Rostra commit on every run.
 
 | Target | Native runner | Archive |
 | --- | --- | --- |
@@ -388,11 +397,14 @@ Existing Sawfish release assets are not silently overwritten.
    build or packaging logic do not invalidate the dependency cache.
 3. Build the core with Go **1.26.10**, Rostra's tags/linker flags, and its Windows
    ARM64 toolchain patch. Check JSON version/API; build the GUI in Release mode.
-4. Run every registered CTest suite; skips fail CI. Retain test/build diagnostics,
-   including after failures.
+4. Run every registered CTest suite, with four suites in parallel by default
+   (`SAWFISH_TEST_JOBS` overrides this); skips fail CI. Retain test/build
+   diagnostics, including after failures.
 5. Stage runtime libraries/plugins, core, documentation, licenses, and
    `build-info.json`. Check ELF/PE architectures, launch the installed GUI without
-   the SDK's library/plugin paths, and test IPC against the packaged core.
+   the SDK's library/plugin paths, and test IPC/validation against the packaged
+   core. The packaging smoke test runs only the Unicode-socket RPC case; version,
+   launch-option, and ownership tests already ran in the complete CTest suite.
    Force text output for `--version` so Windows cannot wait on a Qt message box;
    require the expected version within 30 seconds. Bound the packaged-core test
    to 90 seconds and retain its console/text/JUnit output. The packaging step has
@@ -403,18 +415,21 @@ Existing Sawfish release assets are not silently overwritten.
    which are not advertised as system-wide providers. `makepkg` uses the internal
    `packaging/arch/PKGBUILD.in` and local staging tree; no release download is
    needed and no `PKGBUILD` is published. Package architecture names are mapped
-   to `amd64`/`arm64` for DEB and `x86_64`/`aarch64` for RPM/Arch.
-7. Test installation, upgrade from a synthetic older package, launch as an
-   unprivileged user, removal, and user-data preservation in clean Ubuntu 24.04,
-   Fedora 44, and Arch environments. ARM uses the official Arch Linux ARM root
+   to `amd64`/`arm64` for DEB and `x86_64`/`aarch64` for RPM/Arch. Artifact upload
+   uses compression level zero because these formats are already compressed.
+7. When package checks are enabled, test installation, upgrade from a synthetic
+   older package, launch as an unprivileged user, removal, and user-data
+   preservation in clean Ubuntu 24.04, Fedora 44, and Arch environments.
+   ARM uses the official Arch Linux ARM root
    filesystem on the native ARM runner. RPM compatibility with other distributions
    is not claimed. `scripts/test_linux_packages.sh` runs these checks using Docker.
    The disposable Arch test disables pacman's download filesystem sandbox because
    hosted ARM containers can reject Landlock rules with `EPERM`. Older pacman
    versions use the combined `--disable-sandbox` option. Package signature and
    dependency checks remain enabled; the container keeps its normal isolation.
-8. A separate job signs real amd64 artifacts with a temporary, passphrase-protected
-   test subkey, then verifies all four formats using only public keys. It checks
+8. When package checks are enabled, a separate job signs real amd64 artifacts
+   with a temporary, passphrase-protected test subkey, then verifies all four
+   formats using only public keys. It checks
    rejection of unsigned/modified packages, missing Debian trust policy, and an
    unrelated public key in the Debian keyring.
 9. For a published release only, import the configured release signing subkey in
@@ -624,8 +639,8 @@ proxy settings. URL/updater fixtures use local HTTP servers, not public release
 installs. GUI tests use offscreen/minimal platforms and reject unexpected Qt
 warnings, allowing the offscreen plugin's known dialog-size warning. Real tray
 integration, suspend/resume, and privileged networking need desktop/VM checks.
-Package metadata/recipe tests run with
-`python3 -m unittest discover -s tests -p 'test_packaging.py' -v` before CI builds.
+Build/packaging script tests run before CI builds. From the `tests/` directory,
+run `python3 -m unittest -v test_ci test_packaging` locally.
 
 ## Remaining work
 

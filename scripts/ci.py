@@ -60,6 +60,31 @@ def checked_version(version):
     return version
 
 
+def package_checks_required():
+    # Release and manual runs always exercise every package format. Ordinary
+    # app changes still build/smoke-test packages, without reinstalling distros.
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    if event_name not in ("push", "pull_request"):
+        return True
+    try:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        base = (event["pull_request"]["base"]["sha"] if event_name == "pull_request"
+                else event["before"])
+        if not isinstance(base, str) or not re.fullmatch(r"[0-9a-f]{40}", base) or base == "0" * 40:
+            return True
+        # Include deleted paths and both sides of renames. Unknown history (for
+        # example after a force push) falls back to the complete checks.
+        changed = run("git", "diff", "--name-only", "--no-renames", "-z", base, "HEAD",
+                      cwd=ROOT, capture=True).split("\0")
+    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError):
+        print("Change detection unavailable; running all package checks", flush=True)
+        return True
+    return any(path.startswith((".github/", "scripts/", "packaging/", "cmake/", "proto/")) or
+               path in {"CMakeLists.txt", ".gitattributes", "tests/test_ci.py",
+                        "tests/test_packaging.py", "tests/test_signing.py", "assets/sawfish.svg"}
+               for path in changed)
+
+
 def metadata():
     repository = revision()
     tag = os.environ.get("SAWFISH_RELEASE_TAG", "")
@@ -72,7 +97,8 @@ def metadata():
                          (ROOT / "CMakeLists.txt").read_text())[1]
         sha = os.environ.get("GITHUB_SHA", "uncommitted")[:12]
         version = checked_version(f"{base}-dev.{sha}")
-    write_outputs({"rostra_repository": repository, "version": version})
+    write_outputs({"rostra_repository": repository, "version": version,
+                   "package_checks": str(package_checks_required()).lower()})
 
 
 def verify_core(source, require_clean=False):
@@ -149,7 +175,7 @@ def assert_test_results(path):
 def test():
     output = BUILD / "test-results.xml"
     run("ctest", "--test-dir", BUILD, "--output-on-failure", "--no-tests=error",
-        "--output-junit", output)
+        "--parallel", os.environ.get("SAWFISH_TEST_JOBS", "4"), "--output-junit", output)
     assert_test_results(output)
 
 
@@ -246,10 +272,11 @@ def package(source, archive_only=False):
     if actual_version != f"Sawfish {version}":
         raise ValueError(f"Packaged GUI returned an unexpected version: {actual_version!r}")
     print(actual_version, flush=True)
-    # Exercise the exact packaged core, including authenticated gRPC over UDS.
+    # Smoke-test the exact packaged core's authenticated gRPC and worker. The
+    # complete version/options/ownership suite already ran through CTest.
     test_logs = BUILD / "Testing/QtTest"
     test_logs.mkdir(parents=True, exist_ok=True)
-    run(BUILD / ("sawfish_desktop_tests" + SUFFIX), "-o", "-,txt",
+    run(BUILD / ("sawfish_desktop_tests" + SUFFIX), "grpcAndValidationOverUnicodeSocket", "-o", "-,txt",
         "-o", f"{test_logs / 'sawfish_packaged_core.txt'},txt",
         "-o", f"{test_logs / 'sawfish_packaged_core.xml'},junitxml",
         env=os.environ | {"SAWFISH_TEST_BACKEND": str(binary), "QT_FORCE_STDERR_LOGGING": "1"},

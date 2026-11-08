@@ -22,19 +22,21 @@ jobs:
       rostra_repository: ${{ steps.metadata.outputs.rostra_repository }}
       rostra_commit: ${{ steps.core.outputs.rostra_commit }}
       version: ${{ steps.metadata.outputs.version }}
+      package_checks: ${{ steps.metadata.outputs.package_checks }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          # Compare the whole push/PR, including multi-commit pushes.
+          fetch-depth: 0
           persist-credentials: false
       - id: metadata
         name: Read version and core API requirements
         env:
           SAWFISH_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: python3 scripts/ci.py metadata
-      - name: Test package metadata and release recipes
-        run: python3 -m unittest discover -s tests -p 'test_packaging.py' -v
-      - name: Test core compatibility and commit resolution
-        run: python3 -m unittest discover -s tests -p 'test_ci.py' -v
+      - name: Test build and packaging scripts
+        working-directory: tests
+        run: python3 -m unittest -v test_ci test_packaging
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: ${{ steps.metadata.outputs.rostra_repository }}
@@ -97,6 +99,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Preserve protocol file bytes on Windows
+        if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -183,7 +186,7 @@ jobs:
         timeout-minutes: 15
         run: python scripts/ci.py package --rostra .ci/rostra
       - name: Test Ubuntu, Fedora and Arch installation, upgrade and removal
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.prepare.outputs.package_checks == 'true'
         timeout-minutes: 25
         shell: bash
         run: bash scripts/test_linux_packages.sh
@@ -198,6 +201,8 @@ jobs:
             dist/*.rpm
             dist/*.pkg.tar.zst
           if-no-files-found: error
+          # The package formats are already compressed.
+          compression-level: 0
           retention-days: 14
       - name: Upload diagnostics
         if: always()
@@ -215,7 +220,8 @@ jobs:
           retention-days: 7
 
   test-signing:
-    needs: build
+    if: needs.prepare.outputs.package_checks == 'true'
+    needs: [prepare, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
