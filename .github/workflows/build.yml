@@ -20,26 +20,29 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       rostra_repository: ${{ steps.metadata.outputs.rostra_repository }}
-      rostra_commit: ${{ steps.metadata.outputs.rostra_commit }}
+      rostra_commit: ${{ steps.core.outputs.rostra_commit }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
       - id: metadata
-        name: Read version and pinned core
+        name: Read version and core API requirements
         env:
           SAWFISH_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: python3 scripts/ci.py metadata
       - name: Test package metadata and release recipes
         run: python3 -m unittest discover -s tests -p 'test_packaging.py' -v
+      - name: Test core compatibility and commit resolution
+        run: python3 -m unittest discover -s tests -p 'test_ci.py' -v
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: ${{ steps.metadata.outputs.rostra_repository }}
-          ref: ${{ steps.metadata.outputs.rostra_commit }}
+          ref: testing
           path: .ci/rostra
           persist-credentials: false
-      - name: Verify pinned desktop core before dependency builds
+      - id: core
+        name: Verify desktop core and resolve its commit for all platforms
         run: python3 scripts/ci.py verify-core --rostra .ci/rostra --require-clean
 
   build:
@@ -86,6 +89,7 @@ jobs:
     env:
       SAWFISH_QT_VERSION: '6.8.3'
       SAWFISH_VERSION: ${{ needs.prepare.outputs.version }}
+      SAWFISH_ROSTRA_COMMIT: ${{ needs.prepare.outputs.rostra_commit }}
       SAWFISH_TARGET: ${{ matrix.os }}-${{ matrix.arch }}
       SAWFISH_BUILD_JOBS: '4'
     steps:

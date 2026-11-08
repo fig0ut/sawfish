@@ -6,18 +6,8 @@ rostra_source=${ROSTRA_SOURCE:-"$sawfish_root/../rostra"}
 sawfish_build=${SAWFISH_BUILD_DIR:-"$sawfish_root/build"}
 mkdir -p "$sawfish_build"
 sawfish_build=$(cd -- "$sawfish_build" && pwd)
-expected_revision=$(sed -n 's/^commit=//p' "$sawfish_root/proto/REVISION")
+python3 "$sawfish_root/scripts/ci.py" verify-core --rostra "$rostra_source"
 actual_revision=$(git -C "$rostra_source" rev-parse HEAD)
-if [[ "$actual_revision" != "$expected_revision" ]]; then
-    echo "Rostra revision differs from proto/REVISION. Review and update the pinned API before building." >&2
-    exit 1
-fi
-for proto in daemon/started_service.proto daemon/managed_service.proto experimental/boxdd/desktop_service.proto; do
-    if ! cmp -s "$sawfish_root/proto/$proto" "$rostra_source/$proto"; then
-        echo "Protocol definition differs: $proto. Update the pinned definitions deliberately." >&2
-        exit 1
-    fi
-done
 
 cmake_args=()
 # Optional workspace-local dependency prefix; no system installation is performed.
@@ -40,5 +30,6 @@ mkdir -p "$sawfish_build/go-cache"
         -ldflags "-X github.com/fig0ut/rostra/constant.Version=$rostra_version $rostra_ldflags -buildid=" \
         -o "$sawfish_build/rostra-daemon" ./experimental/boxdd
 )
-"$sawfish_build/rostra-daemon" version
+python3 "$sawfish_root/scripts/ci.py" verify-core --rostra "$rostra_source" \
+    --binary "$sawfish_build/rostra-daemon"
 echo "Built $sawfish_build/sawfish and $sawfish_build/rostra-daemon"

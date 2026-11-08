@@ -19,14 +19,15 @@ arm64. macOS needs a backend implementation before it can join that matrix.
 
 Use CMake 3.19+, a C++17 compiler, Ninja, Python 3, Qt 6.5+ with
 Core/Gui/Widgets/Network/SVG/Test, Protobuf, gRPC C++ (including `protoc` and
-`grpc_cpp_plugin`), and the Go toolchain required by the pinned Rostra checkout.
+`grpc_cpp_plugin`), and the Go toolchain required by the Rostra checkout.
 Use matching Protobuf and gRPC libraries and generators.
 
-[`proto/REVISION`](../proto/REVISION) records the Rostra repository, exact commit,
-and RPC API version. Both build scripts require that commit and byte-identical
-copies of the three vendored protocol files. Local core modifications are
-allowed for development; CI requires a clean checkout. Push a new Rostra commit
-before updating the pin and copy any changed protocol definitions.
+[`proto/REVISION`](../proto/REVISION) records the Rostra repository and RPC API
+version. Both build scripts accept any source commit with byte-identical copies
+of the three vendored protocol files and verify the built core's JSON version/API.
+Unrelated Rostra commits require no Sawfish metadata changes. Local core
+modifications are allowed for development; CI requires a clean checkout. Review
+and copy changed protocol definitions when updating the API.
 
 ### Linux
 
@@ -35,8 +36,7 @@ qt6-svg protobuf grpc go`; packaging also needs `patchelf`. From the Sawfish roo
 create a sibling Rostra checkout if one does not already exist:
 
 ```sh
-git clone https://github.com/fig0ut/rostra ../rostra
-git -C ../rostra checkout "$(sed -n 's/^commit=//p' proto/REVISION)"
+git clone --branch testing https://github.com/fig0ut/rostra ../rostra
 ./scripts/build.sh
 ctest --test-dir build --output-on-failure
 ./scripts/run-dev.sh
@@ -66,7 +66,7 @@ by that Qt build; the socket transport also requires Windows 10 1803 or later.
 MinGW's gRPC transport does not support this native Unix-socket path.
 
 Keep the vendored protocol files byte-identical in both checkouts
-(`core.autocrlf=false`). With Rostra at the pinned revision beside Sawfish:
+(`core.autocrlf=false`). With a compatible Rostra checkout beside Sawfish:
 
 ```powershell
 ./scripts/build.ps1 -PrefixPath 'C:/Qt/6.x/msvc2022_64;C:/dependencies/installed/x64-windows'
@@ -106,7 +106,7 @@ library. Custom feature tags can require additional libraries.
 | `backend/` | RPC client, core/worker lifecycle, core updates, and CPU sampling. |
 | `models/` | Profiles, outbound groups, connections, logs, and formatting. |
 | `pages/`, `widgets/` | Qt pages and reusable themed controls. |
-| `proto/` | Vendored RPC definitions and core revision pin. |
+| `proto/` | Vendored RPC definitions and required core API version. |
 | `cmake/` | Generated C++ namespace adaptation. |
 | `scripts/`, `.github/` | Development commands and build/test/package workflow. |
 | `tests/` | Model, RPC, UI, update, and real-process integration tests. |
@@ -343,8 +343,12 @@ pruning, and historical-version selection remain future work.
 
 ## CI and releases
 
-The [desktop workflow](../.github/workflows/build.yml) uses a pinned baseline core
-that users can later update independently.
+The [desktop workflow](../.github/workflows/build.yml) resolves Rostra's `testing`
+branch once in the prepare job. Every platform checks out that resolved commit
+and bundles the resulting core, which users can later update independently.
+The actual commit and version are recorded in `build-info.json`. A new workflow
+run can pick up a newer compatible core without changing `proto/REVISION`;
+rebuilding an older package requires checking out the commit in its build info.
 
 | Event | Result |
 | --- | --- |
@@ -370,8 +374,10 @@ Existing Sawfish release assets are not silently overwritten.
 
 [`scripts/ci.py`](../scripts/ci.py) implements the shared pipeline:
 
-1. Read version and `proto/REVISION`; verify the exact core commit, protocol bytes,
-   and required owned command interface in a clean checkout.
+1. Read version and `proto/REVISION`; check out Rostra's `testing` branch and verify
+   protocol bytes and the required owned command interface in a clean checkout.
+   Export its actual commit for all build jobs; reject a different checkout
+   within that run. The API version is also checked after building the core.
 2. Install Qt **6.8.3** with aqtinstall **3.3.0**. Build gRPC **1.84.0**, pinned by
    commit, with matching Protobuf and dependencies. These C++ libraries are
    static; Qt stays dynamic. Use four parallel compile jobs on hosted runners.
@@ -642,11 +648,11 @@ Sawfish is licensed under **GPL-3.0-or-later**; the full GPLv3 text is in
 [`LICENSE`](../LICENSE), and the project notice is in the [README](../README.md#license).
 Third-party materials retain their original copyright and license notices.
 
-The protocol files copied from Rostra keep the pinned upstream notice in
+The protocol files copied from Rostra keep the upstream notice in
 [`proto/LICENSE`](../proto/LICENSE), including its naming/association clause.
-Keep that notice synchronized when updating `proto/REVISION`; do not replace it
-with Sawfish's copyright. The protocol files themselves stay byte-identical to
-the pinned source. [Heroicons](../assets/heroicons/README.md) retains its MIT license.
+Keep that notice synchronized when updating the vendored definitions; do not
+replace it with Sawfish's copyright. The protocol files themselves stay byte-identical to
+the compatible source. [Heroicons](../assets/heroicons/README.md) retains its MIT license.
 
 CMake installs the Sawfish license and the Rostra protocol/Heroicons notices
 under `share/licenses/sawfish`. CI archives also include the license files at

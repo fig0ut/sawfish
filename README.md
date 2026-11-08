@@ -67,8 +67,9 @@ extracting a newer archive; Rostra updates are available inside Sawfish.
 ## Build from source
 
 Install the [build dependencies](docs/development.md#build-and-run), and check out
-Rostra beside this repository at the revision recorded in
-[`proto/REVISION`](proto/REVISION). On Linux:
+Rostra beside this repository with the API version recorded in
+[`proto/REVISION`](proto/REVISION) and matching protocol definitions. The source
+commit can change without updating Sawfish. On Linux:
 
 ```sh
 ./scripts/build.sh

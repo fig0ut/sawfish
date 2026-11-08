@@ -16,17 +16,10 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Command failed with exit code $LASTEXITCODE" }
 }
-$expected = ((Get-Content "$sawfishRoot/proto/REVISION" | Where-Object { $_ -like 'commit=*' }) -replace '^commit=', '').Trim()
+Invoke-Checked 'python' @("$sawfishRoot/scripts/ci.py", 'verify-core', '--rostra', $rostraRoot)
 $revision = (& git -C $rostraRoot rev-parse HEAD)
-if ($LASTEXITCODE -ne 0 -or $revision.Trim() -ne $expected) {
-    throw "Rostra revision differs from proto/REVISION. Review and update the pinned API before building."
-}
-foreach ($proto in @('daemon/started_service.proto', 'daemon/managed_service.proto', 'experimental/boxdd/desktop_service.proto')) {
-    # Git must preserve the vendored definitions byte for byte (core.autocrlf=false).
-    if ((Get-FileHash "$sawfishRoot/proto/$proto").Hash -ne (Get-FileHash "$rostraRoot/$proto").Hash) {
-        throw "Protocol definition differs: $proto. Update the pinned definitions deliberately."
-    }
-}
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read the Rostra revision' }
+$revision = $revision.Trim()
 $cmakeArguments = @('-S', $sawfishRoot, '-B', $buildRoot, '-G', 'Ninja',
     "-DCMAKE_BUILD_TYPE=$BuildType", "-DSAWFISH_ROSTRA_EXECUTABLE=$buildRoot/rostra-daemon.exe")
 if ($PrefixPath) { $cmakeArguments += "-DCMAKE_PREFIX_PATH=$PrefixPath" }
@@ -49,5 +42,6 @@ try {
     Pop-Location
     $env:CGO_ENABLED = $previousCgo
 }
-Invoke-Checked "$buildRoot/rostra-daemon.exe" @('version')
+Invoke-Checked 'python' @("$sawfishRoot/scripts/ci.py", 'verify-core', '--rostra', $rostraRoot,
+    '--binary', "$buildRoot/rostra-daemon.exe")
 Write-Host "Built $buildRoot/sawfish.exe and $buildRoot/rostra-daemon.exe"

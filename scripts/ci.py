@@ -23,6 +23,7 @@ PROTOS = ("daemon/started_service.proto", "daemon/managed_service.proto",
           "experimental/boxdd/desktop_service.proto")
 WINDOWS = sys.platform == "win32"
 SUFFIX = ".exe" if WINDOWS else ""
+SUPPORTED_API_VERSION = 4
 
 
 def run(*args, cwd=ROOT, capture=False, env=None, timeout=None):
@@ -38,11 +39,19 @@ def revision():
                   if line and not line.startswith("#"))
     match = re.fullmatch(r"https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
                          values.get("repository", ""))
-    if not match or not re.fullmatch(r"[0-9a-f]{40}", values.get("commit", "")):
-        raise ValueError("proto/REVISION must contain a GitHub repository and a full commit SHA")
-    if values.get("api_version") != "4":
-        raise ValueError("Review the client API version before changing the core pin")
-    return match[1], values["commit"]
+    if not match:
+        raise ValueError("proto/REVISION must contain a GitHub repository")
+    if values.get("api_version") != str(SUPPORTED_API_VERSION):
+        raise ValueError("proto/REVISION does not match the client API version")
+    return match[1]
+
+
+def write_outputs(values):
+    for key, value in values.items():
+        print(f"{key}={value}")
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.writelines(f"{key}={value}\n" for key, value in values.items())
 
 
 def checked_version(version):
@@ -52,7 +61,7 @@ def checked_version(version):
 
 
 def metadata():
-    repository, commit = revision()
+    repository = revision()
     tag = os.environ.get("SAWFISH_RELEASE_TAG", "")
     if tag:
         if not tag.startswith("v"):
@@ -63,27 +72,23 @@ def metadata():
                          (ROOT / "CMakeLists.txt").read_text())[1]
         sha = os.environ.get("GITHUB_SHA", "uncommitted")[:12]
         version = checked_version(f"{base}-dev.{sha}")
-    values = {"rostra_repository": repository, "rostra_commit": commit, "version": version}
-    for key, value in values.items():
-        print(f"{key}={value}")
-    if os.environ.get("GITHUB_OUTPUT"):
-        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-            output.writelines(f"{key}={value}\n" for key, value in values.items())
+    write_outputs({"rostra_repository": repository, "version": version})
 
 
 def verify_core(source, require_clean=False):
-    _, commit = revision()
+    revision()
     actual = run("git", "rev-parse", "HEAD", cwd=source, capture=True)
-    if actual != commit:
-        raise ValueError("Rostra HEAD differs from proto/REVISION; update the pin deliberately")
+    expected = os.environ.get("SAWFISH_ROSTRA_COMMIT")
+    if expected and actual != expected:
+        raise ValueError("Rostra HEAD differs from the commit resolved for this CI run")
     for proto in PROTOS:
         if (source / proto).read_bytes() != (ROOT / "proto" / proto).read_bytes():
-            raise ValueError(f"Pinned protocol differs: {proto}")
+            raise ValueError(f"Protocol definition differs: {proto}; review and update the vendored definitions")
     if not (source / "experimental/boxdd/cmd_version.go").is_file():
-        raise ValueError("The pinned Rostra commit predates the owned core command interface. "
-                         "Commit/push those Rostra changes, then update proto/REVISION before CI can pass.")
+        raise ValueError("Rostra checkout lacks the required desktop core version command")
     if require_clean and run("git", "status", "--porcelain", cwd=source, capture=True):
         raise ValueError("CI requires a clean Rostra checkout")
+    return actual
 
 
 def environment():
@@ -105,16 +110,16 @@ def environment():
 
 def core_info(binary):
     info = json.loads(run(binary, "version", capture=True, timeout=30))
-    if info.get("api_version") != 4 or not isinstance(info.get("version"), str) or not info["version"]:
+    if (info.get("api_version") != SUPPORTED_API_VERSION or
+            not isinstance(info.get("version"), str) or not info["version"]):
         raise ValueError("Bundled Rostra does not implement the required core version/API contract")
     return info
 
 
 def build(source):
-    verify_core(source)
+    commit = verify_core(source)
     BUILD.mkdir(parents=True, exist_ok=True)
     binary = BUILD / ("rostra-daemon" + SUFFIX)
-    _, commit = revision()
     core_version = "sawfish-" + commit[:9]
     # Match Rostra's single-file desktop release; Naive needs a companion libcronet.
     tags = (source / "release/DEFAULT_BUILD_TAGS_OTHERS").read_text().strip()
@@ -168,7 +173,7 @@ def verify_architecture(binary, target):
 
 
 def package(source, archive_only=False):
-    verify_core(source)
+    commit = verify_core(source)
     version = checked_version(os.environ["SAWFISH_VERSION"])
     target = os.environ["SAWFISH_TARGET"]
     if target not in {"linux-amd64", "linux-arm64", "windows-amd64", "windows-arm64"}:
@@ -182,6 +187,8 @@ def package(source, archive_only=False):
     verify_architecture(binary, target)
     verify_architecture(stage / "bin" / ("sawfish" + SUFFIX), target)
     info = core_info(binary)
+    if info["version"] != "sawfish-" + commit[:9]:
+        raise ValueError("Bundled core version does not match the Rostra checkout; rebuild before packaging")
     licenses = stage / "share/licenses"
     licenses.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source / "LICENSE", licenses / "Rostra-LICENSE")
@@ -199,7 +206,7 @@ def package(source, archive_only=False):
         url = f"https://raw.githubusercontent.com/qt/qtbase/v{qt_version}/LICENSES/{license_name}"
         with urllib.request.urlopen(url, timeout=30) as response:
             (qt_licenses / license_name).write_bytes(response.read())
-    repository, commit = revision()
+    repository = revision()
     manifest = {"sawfish_version": version, "sawfish_commit": os.environ.get("GITHUB_SHA", "local"),
                 "target": target, "rostra_repository": repository, "rostra_commit": commit,
                 "rostra_dirty": bool(run("git", "status", "--porcelain", cwd=source, capture=True)),
@@ -263,14 +270,21 @@ def main():
                                             "build", "test", "package"))
     parser.add_argument("--rostra", type=Path, default=ROOT / ".ci/rostra")
     parser.add_argument("--require-clean", action="store_true")
+    parser.add_argument("--binary", type=Path,
+                        help="Also verify the built core's JSON version/API with verify-core")
     parser.add_argument("--archive-only", action="store_true",
                         help="Package a development archive without native installers")
     args = parser.parse_args()
     if args.archive_only and args.command != "package":
         parser.error("--archive-only is only valid with package")
+    if args.binary and args.command != "verify-core":
+        parser.error("--binary is only valid with verify-core")
     source = args.rostra.resolve()
     if args.command == "verify-core":
-        verify_core(source, args.require_clean)
+        commit = verify_core(source, args.require_clean)
+        if args.binary:
+            core_info(args.binary.resolve())
+        write_outputs({"rostra_commit": commit})
     elif args.command == "build":
         build(source)
     elif args.command == "package":
