@@ -421,6 +421,12 @@ void CoreUpdater::advance() {
         if (m_controller->state() != Controller::Idle)
             return;
         if (m_resume) {
+            QString error;
+            const auto runtime = m_controller->runtimeConfiguration(m_config, &error);
+            if (!error.isEmpty()) {
+                fail(error);
+                return;
+            }
             m_phase = Resume;
             // Restore exactly the session we checked, even if it was restored
             // by the daemon and does not correspond to the selected profile.
@@ -429,7 +435,7 @@ void CoreUpdater::advance() {
             m_controller->m_pendingProfile = m_profileId;
             m_controller->m_operation = Controller::Start;
             m_controller->m_pendingId = ++m_controller->m_nextId;
-            m_controller->m_rpc.startService(m_controller->m_pendingId, m_config);
+            m_controller->m_rpc.startService(m_controller->m_pendingId, runtime);
         } else
             finish(m_failure.isEmpty());
     } else if (m_phase == Resume) {

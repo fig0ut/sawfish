@@ -42,6 +42,17 @@ class ConnectionSwitch : public QAbstractButton {
     void paintEvent(QPaintEvent*) override;
 };
 
+class ToggleSwitch : public QAbstractButton {
+  public:
+    explicit ToggleSwitch(QWidget* parent = nullptr);
+    QSize sizeHint() const override {
+        return {54, 30};
+    }
+
+  protected:
+    void paintEvent(QPaintEvent*) override;
+};
+
 class RoundedMenu : public QMenu {
   public:
     explicit RoundedMenu(QWidget* parent = nullptr);

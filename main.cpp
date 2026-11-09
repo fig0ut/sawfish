@@ -1,5 +1,6 @@
 #include "app/controller.h"
 #include "backend/coreupdater.h"
+#include "backend/proxysettings.h"
 #include "mainwindow.h"
 #include <QApplication>
 #include <QCommandLineParser>
@@ -10,6 +11,12 @@
 #include <QStandardPaths>
 
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_LINUX
+    if (argc > 1 && QByteArray(argv[1]) == "--system-proxy-helper") {
+        QCoreApplication helper(argc, argv);
+        return runSystemProxyHelper();
+    }
+#endif
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     QCoreApplication::setOrganizationName("Sawfish");
@@ -56,6 +63,7 @@ int main(int argc, char* argv[]) {
         }
     }
     Controller controller(directory, executable, {});
+    controller.initializeSystemProxy();
     MainWindow window(&controller);
     QObject::connect(&window, &MainWindow::quitReady, &app, &QCoreApplication::quit);
     window.show();

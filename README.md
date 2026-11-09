@@ -6,6 +6,7 @@ A Qt desktop client for [Rostra](https://github.com/fig0ut/rostra).
 - Switch outbound proxies and test their latency.
 - Customize a dashboard with traffic, connection, CPU, and memory charts.
 - Inspect live connections and logs.
+- Enable the desktop system proxy on GNOME and KDE Plasma, with automatic restoration on stop.
 - Update the Rostra core independently through stable and prerelease channels.
 
 Sawfish starts and manages its core automatically. Closing the window hides it in
@@ -31,9 +32,15 @@ The archive does not create menu shortcuts. Linux currently requires X11 or
 XWayland; the Ubuntu-built bundle is not guaranteed to run on older distributions.
 
 In Profiles, use **+ → From file** or **From URL** to import a Rostra configuration,
-then use the switch on Home to connect. Configure the applications you want to
-proxy to use the inbound address/port in that profile. Automatic system-proxy
-setup and privileged TUN integration are not implemented yet.
+then use the switch on Home to connect. On GNOME or KDE Plasma, enable **System
+proxy** on Home to route applications that follow desktop proxy settings through
+Sawfish. The profile needs a local mixed, HTTP, or SOCKS inbound with a fixed port
+and no authentication or TLS. The switch starts off; Sawfish restores the previous
+desktop settings when disconnected or closed using **Quit**, and after a GUI crash.
+Closing the window to the tray keeps the connection and system proxy active.
+
+Applications with their own proxy settings still need the inbound address/port
+configured manually. Privileged TUN integration is not implemented yet.
 
 ### Linux packages
 

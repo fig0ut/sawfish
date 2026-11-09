@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -224,13 +225,43 @@ class UpdateTest : public QObject {
         const auto coreVersion = version();
         QVERIFY(!coreVersion.isEmpty());
         QTemporaryDir directory;
+#ifdef Q_OS_LINUX
+        // A GUI-controlled profile must never let either the original or updated
+        // core write desktop settings itself. Intercept every settings command;
+        // this also prevents a regression from touching the developer's desktop.
+        const auto originalPath = qgetenv("PATH");
+        const auto restorePath = qScopeGuard([&] { qputenv("PATH", originalPath); });
+        const auto tools = directory.filePath("tools");
+        QVERIFY(QDir().mkpath(tools));
+        for (const auto* name : {"gsettings", "kwriteconfig5", "kwriteconfig6"}) {
+            QFile blocked(tools + "/" + name);
+            QVERIFY(blocked.open(QIODevice::WriteOnly));
+            blocked.write("#!/bin/sh\nexit 97\n");
+            blocked.close();
+            QVERIFY(blocked.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                           QFileDevice::ExeOwner));
+        }
+        qputenv("PATH", tools.toUtf8() + ":" + originalPath);
+#endif
         Controller controller(directory.path(), backend(), {});
         controller.initialize();
         QTRY_COMPARE_WITH_TIMEOUT(controller.state(), Controller::Idle, 15000);
         QTRY_COMPARE(controller.workerStatus(), "Ready");
         QFile config(directory.filePath("profile.json"));
         QVERIFY(config.open(QIODevice::WriteOnly));
+#ifdef Q_OS_LINUX
+        QTcpServer reservation;
+        QVERIFY(reservation.listen(QHostAddress::LocalHost, 0));
+        const auto port = reservation.serverPort();
+        reservation.close();
+        config.write(
+            QString(
+                R"({"inbounds":[{"type":"mixed","listen":"127.0.0.1","listen_port":%1,"set_system_proxy":true}],"outbounds":[{"type":"direct"}]})")
+                .arg(port)
+                .toUtf8());
+#else
         config.write("{\"outbounds\":[{\"type\":\"direct\"}]}");
+#endif
         config.close();
         QVERIFY(controller.importProfile(config.fileName()));
         if (running) {

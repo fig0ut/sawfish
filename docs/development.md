@@ -9,6 +9,7 @@ arm64. macOS needs a backend implementation before it can join that matrix.
 - [Source layout](#source-layout)
 - [Backend and lifecycle](#backend-and-lifecycle)
 - [Application behavior](#application-behavior)
+- [Linux system proxy](#linux-system-proxy)
 - [Core updates](#core-updates)
 - [CI and releases](#ci-and-releases)
 - [Testing](#testing)
@@ -44,7 +45,9 @@ ctest --test-dir build --output-on-failure
 
 The build produces `build/sawfish` and `build/rostra-daemon`. The development
 launcher uses `build/dev-runtime/client` for profiles, preferences, and core
-state. Run `build/sawfish` directly to use the normal application data location.
+state and incrementally builds the GUI before launching it. Run `scripts/build.sh`
+again when changing the Rostra core. Run `build/sawfish` directly to use the normal
+application data location.
 The adjacent core is discovered automatically; `--backend` and `--data-dir`
 provide development overrides. Settings → Advanced also has an executable
 override. Socket paths are managed internally.
@@ -103,7 +106,7 @@ library. Custom feature tags can require additional libraries.
 | --- | --- |
 | `main.cpp`, `mainwindow.*` | Application entry point, window, navigation, and tray. |
 | `app/` | Controller, shared state, and application operations. |
-| `backend/` | RPC client, core/worker lifecycle, core updates, and CPU sampling. |
+| `backend/` | RPC client, core/worker lifecycle, desktop proxy restoration, core updates, and CPU sampling. |
 | `models/` | Profiles, outbound groups, connections, logs, and formatting. |
 | `pages/`, `widgets/` | Qt pages and reusable themed controls. |
 | `proto/` | Vendored RPC definitions and required core API version. |
@@ -160,8 +163,10 @@ including the generated header. Both must link and exchange the same RPCs.
 | Select outbound / test delay | `SubscribeGroups`, `SelectOutbound`, `URLTest` |
 | Inspect logs and connections | `SubscribeLog`, `SubscribeConnections`, `CloseConnection` |
 
-`ReloadService` does not accept edited configuration content. Routing mode and
-system proxy APIs exist in Rostra, but their Sawfish controls remain planned.
+`ReloadService` does not accept edited configuration content. Routing-mode controls
+remain planned. Sawfish manages the Linux desktop proxy directly: Rostra's managed
+system-proxy API is tied to TUN platform options, and its Linux settings helper
+does not snapshot or restore previous desktop settings.
 Unsupported methods, ownership conflicts, and API mismatches are surfaced
 explicitly. After an uncertain command result, reconnect and reconcile state;
 do not blindly repeat start/stop or selection commands.
@@ -178,7 +183,7 @@ do not blindly repeat start/stop or selection commands.
 | Open from tray | Restore the existing window and session. |
 | Quit / Ctrl+Q | Cancel pending work, stop networking and both children, then exit. |
 | Core crash | Recover with backoff while Sawfish is alive; at most four starts per minute. |
-| Sawfish crash | OS parent-death protection terminates its children. |
+| Sawfish crash | OS parent-death protection terminates core/worker; the proxy helper restores desktop settings and exits. |
 
 Retry explicitly resets the restart limit. If the tray disappears while hidden,
 the window is restored. No core is launched detached or adopted from another
@@ -189,7 +194,7 @@ launch uses a fresh private socket directory.
 state lock, and termination deadlines. `Controller` allows 15 seconds for startup
 readiness, three seconds for the shutdown RPC, and a five-second core termination
 grace period. The worker closes stdin and has a one-second fallback deadline.
-Shutdown completes only after both children stop; destructors also clean up.
+Shutdown completes after the core, worker, and proxy helper stop; destructors also clean up.
 
 Linux uses normal `run` and `worker` modes, preserving existing peer authentication
 and platform behavior. `backend/ownedprocess.h` uses `PR_SET_PDEATHSIG(SIGKILL)`
@@ -221,6 +226,70 @@ install a service. `version` returns JSON such as
 `{"version":"1.2.3","api_version":4}`; root `--version` retains text output.
 `check` reads at most 4 MiB from stdin, validates without networking, and returns
 zero on success or an error and nonzero status on failure.
+
+## Linux system proxy
+
+Home has a **System proxy** switch, off by default and remembered across launches.
+It takes effect only after the selected profile starts successfully. Disconnect,
+profile replacement, loss of the core connection, and Quit restore desktop proxy
+settings. A replacement profile gets its own endpoint only after activation;
+failed validation leaves the existing connection and its proxy intact. Closing
+the window to the tray keeps both active. The switch is hidden on Windows/macOS.
+
+`backend/proxyprofile.*` reads JSON/JSONC and chooses a compatible loopback inbound:
+mixed before HTTP before SOCKS, preferring one with `set_system_proxy: true`.
+Wildcard listeners map to the corresponding loopback address. Ports must be fixed
+and nonzero; authentication, TLS, inbound detours, and HTTP without HTTP/1 are not
+eligible. A profile with no eligible inbound can still run with System proxy off.
+The imported file is never changed. On Linux, the runtime copy disables inbound
+`set_system_proxy` and `tun.platform.http_proxy.enabled` so that the Home switch is
+the single owner of desktop proxy changes. Windows profile behavior is unchanged.
+
+`backend/systemproxy.*` communicates asynchronously with a second invocation of
+Sawfish in the internal `--system-proxy-helper` mode. This mode uses only
+`QCoreApplication`, runs as the desktop user, and does not need a display server,
+root access, or a new core API. It uses an anonymous stdin pipe, never a TCP port.
+EOF makes the helper restore settings and exit, including when the GUI is killed
+with SIGKILL. Unlike the core/worker, the helper deliberately survives its parent
+long enough to perform cleanup. Nothing is installed as a service.
+
+`backend/proxysettings.*` uses the desktop's existing tools:
+
+| Desktop | Required tools/settings |
+| --- | --- |
+| GNOME / Ubuntu GNOME | `gsettings`, `org.gnome.system.proxy` schemas, the user's settings/session bus |
+| KDE Plasma 5/6 | Matching `kreadconfig5/6` and `kwriteconfig5/6`, `dbus-send`, the user's session bus |
+
+GNOME settings follow the [desktop proxy schema](https://github.com/GNOME/gsettings-desktop-schemas/blob/master/schemas/org.gnome.system.proxy.gschema.xml.in).
+KDE uses [`kioslaverc`'s Proxy Settings group](https://github.com/KDE/kio-extras/blob/master/kcms/proxy/kioslave.kcfg)
+and broadcasts the same [KIO refresh signal as System Settings](https://github.com/KDE/kio-extras/blob/master/kcms/proxy/ksaveioconfig.cpp).
+Only the active desktop is changed. HTTP/HTTPS and SOCKS endpoints are set according
+to the inbound's capabilities; unused manual endpoints are cleared for the session.
+Existing bypass rules, PAC URL, and stored authentication credentials are preserved.
+Desktop proxy support only covers applications that follow those settings; it does
+not change shell environment variables or route all network traffic. Some desktop
+applications need restarting to pick up changed settings.
+
+Before writing, the helper saves an atomic, owner-readable/writable `recovery.json`
+under `$XDG_DATA_HOME/sawfish/system-proxy` (normally
+`~/.local/share/sawfish/system-proxy`). A lock in that directory prevents concurrent
+Sawfish instances from changing the proxy, including separate `--data-dir` instances.
+Each write is read back; policy restrictions and partial failures cause rollback.
+Restoration only reverts values that still match what Sawfish wrote, preserving
+individual keys edited by another application. Original absent KDE keys are deleted.
+If cleanup cannot complete, the journal is retained and retried on the next launch.
+A corrupt journal is retained with an error instead of guessing previous settings.
+If both the GUI and helper are killed (or the machine loses power), restoration
+therefore occurs when Sawfish next starts. System-proxy errors, including unavailable
+desktop support, appear as toasts and are recorded in Logs with the `[APP]` prefix.
+Home has no proxy status label. The switch remains visible but disabled when unavailable.
+
+The automated suite uses simulated desktop commands, temporary journals, a real
+helper process, and real Rostra connections. It covers partial write failure,
+read-back failure, recovery, external edits, duplicate ownership, endpoint changes,
+failed startup, disconnect, core death, and GUI SIGKILL. Desktop-tool checks should
+use a disposable user/session or isolated XDG directories and `dbus-run-session`;
+never run lifecycle tests against a developer's live proxy settings.
 
 ## Application behavior
 
@@ -628,6 +697,7 @@ those access rules.
 | `sawfish_dragdrop` | Column drag/drop, reorder, Save/Cancel, last-visible guard | Linux, Windows |
 | `sawfish_backend` | Real proxy traffic, selectors, profiles, connection closure, reconnect | Linux |
 | `sawfish_lifecycle` | Startup/shutdown, locks, crash recovery, orphan prevention | Linux |
+| `sawfish_systemproxy` | Profile endpoints, desktop settings rollback, recovery; Linux helper/core lifecycle | Linux, Windows (pure logic only) |
 
 These are the registered targets; Windows GUI/runtime behavior must pass on a
 native runner. Cross-compiling Go cannot verify Qt IPC or Job Objects. The Linux
@@ -648,9 +718,9 @@ run `python3 -m unittest -v test_ci test_packaging` locally.
   add formatting/export and deliberate handling of external assets.
 - Add routing modes and login autostart; validate KDE/GNOME tray behavior and
   suspend/resume on real desktops.
-- Implement narrowly scoped privileged TUN/system-proxy integration with route,
-  DNS, and proxy cleanup on Disconnect, Quit, and crash. Keep the GUI unprivileged
-  and preserve the Sawfish-bound lifetime.
+- Implement narrowly scoped privileged TUN integration with route and DNS cleanup
+  on Disconnect, Quit, and crash. Keep the GUI unprivileged and preserve the
+  Sawfish-bound lifetime. Extend desktop system-proxy support to Windows/macOS.
 - Validate native Windows GUI behavior; add installers, signing, desktop
   integration, and clean-machine upgrade/uninstall checks.
 - Prototype macOS backend ownership and privileged networking before packaging.

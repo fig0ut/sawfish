@@ -16,6 +16,12 @@ Controller::Controller(QString directory, QString executable, QString socket, QO
                                         : executable),
       m_socket(socket), m_managed(socket.isEmpty()) {
     m_selected = m_settings.value("profile/selected").toString();
+#ifdef Q_OS_LINUX
+    m_systemProxyEnabled = m_settings.value("proxy/enabled", false).toBool();
+#endif
+    connect(&m_systemProxy, &SystemProxy::changed, this, &Controller::changed);
+    connect(&m_systemProxy, &SystemProxy::error, this, &Controller::reportSystemProxyError);
+    connect(&m_systemProxy, &SystemProxy::stoppedSignal, this, &Controller::finishShutdown);
     m_logs.setRetentionLimit(m_settings.value("logs/retention", LogModel::MaxLines).toInt());
     m_retry.setSingleShot(true);
     connect(&m_retry, &QTimer::timeout, this, &Controller::retry);
@@ -134,6 +140,7 @@ Controller::Controller(QString directory, QString executable, QString socket, QO
             m_activeId.clear();
             m_activeContent.clear();
         }
+        updateSystemProxy();
         if (!error.isEmpty())
             announce(error, true);
         else
@@ -210,6 +217,7 @@ Controller::Controller(QString directory, QString executable, QString socket, QO
 
 Controller::~Controller() {
     m_shuttingDown = true;
+    m_systemProxy.shutdown();
     m_coreUpdater.reset();
     if (m_download) {
         disconnect(m_download, nullptr, this, nullptr);
@@ -225,6 +233,60 @@ Controller::~Controller() {
     m_rpc.setWorkerSocket({});
     m_worker.stop();
     m_core.stopAndWait();
+}
+
+void Controller::initializeSystemProxy(const QString& directory, const QString& executable) {
+    if (m_managed && !m_shuttingDown)
+        m_systemProxy.initialize(directory, executable);
+}
+
+void Controller::setSystemProxyEnabled(bool enabled) {
+    if (m_shuttingDown || busy() || systemProxyBusy() || (enabled && !systemProxyAvailable()))
+        return;
+    if (enabled && m_state == Running && !prepareProxyProfile(m_activeContent).endpoint.valid()) {
+        reportSystemProxyError(tr("System proxy needs a local HTTP, mixed, or SOCKS inbound with a "
+                                  "fixed port and no authentication or TLS."));
+        return;
+    }
+    m_systemProxyEnabled = enabled;
+    m_settings.setValue("proxy/enabled", enabled);
+    m_settings.sync();
+    if (m_settings.status() != QSettings::NoError)
+        reportSystemProxyError(tr("Could not save the system-proxy preference."));
+    updateSystemProxy();
+    notify(enabled ? tr("System proxy enabled for connections.") : tr("System proxy disabled."));
+    emit changed();
+}
+
+void Controller::updateSystemProxy() {
+    ProxyEndpoint endpoint;
+    if (m_systemProxyEnabled && m_managed && m_online && m_state == Running &&
+        m_operation != Start && m_operation != Stop && m_operation != Delete && !m_shuttingDown)
+        endpoint = prepareProxyProfile(m_activeContent).endpoint;
+    m_systemProxy.setTarget(endpoint);
+}
+
+QString Controller::runtimeConfiguration(const QString& content, QString* error) const {
+#ifdef Q_OS_LINUX
+    if (m_managed) {
+        const auto profile = prepareProxyProfile(content);
+        if (!profile.error.isEmpty())
+            *error = profile.error;
+        else if (m_systemProxyEnabled && !profile.endpoint.valid())
+            *error = tr("System proxy needs a local HTTP, mixed, or SOCKS inbound with a fixed "
+                        "port and no authentication or TLS. Disable System proxy to connect "
+                        "this profile.");
+        return profile.content;
+    }
+#else
+    Q_UNUSED(error)
+#endif
+    return content;
+}
+
+void Controller::reportSystemProxyError(const QString& message) {
+    notify(message, true);
+    emit changed();
 }
 
 void Controller::initialize() {
@@ -247,6 +309,7 @@ void Controller::initialize() {
 void Controller::configure(const QString& executable, const QString& socket) {
     if (!canConfigure())
         return;
+    m_systemProxy.setTarget({});
     m_executable = executable;
     if (!m_managed)
         m_socket = socket;
@@ -296,6 +359,7 @@ void Controller::retry() {
         return;
     }
     m_retry.stop();
+    m_systemProxy.setTarget({});
     m_online = false;
     m_state = Unavailable;
     m_version.clear();
@@ -317,6 +381,7 @@ void Controller::retry() {
 }
 
 void Controller::lost(const QString& message, bool retryable) {
+    m_systemProxy.setTarget({});
     if (m_shuttingDown) {
         stopCoreForShutdown();
         return;
@@ -352,6 +417,7 @@ void Controller::shutdown() {
         m_online && (m_state == Running || m_state == Starting || m_state == Stopping ||
                      m_state == Failed || m_operation == Start);
     m_shuttingDown = true;
+    m_systemProxy.shutdown();
     m_coreUpdater->cancel();
     if (m_download)
         m_download->abort();
@@ -389,7 +455,7 @@ void Controller::stopCoreForShutdown() {
 
 void Controller::finishShutdown() {
     if (!m_shuttingDown || !m_shutdownCoreRequested || m_shutdownEmitted || m_core.running() ||
-        m_worker.running())
+        m_worker.running() || !m_systemProxy.stopped())
         return;
     m_shutdownEmitted = true;
     emit shutdownFinished();
@@ -605,6 +671,7 @@ void Controller::deleteProfile(const QString& id) {
     if (busy() || !m_profiles.find(id))
         return;
     if (id == m_activeId && m_state == Running) {
+        m_systemProxy.setTarget({});
         m_deleteId = id;
         m_operation = Delete;
         m_pendingId = ++m_nextId;
@@ -719,6 +786,7 @@ void Controller::disconnectService() {
     if (!canDisconnect())
         return;
     m_operation = Stop;
+    m_systemProxy.setTarget({});
     m_pendingId = ++m_nextId;
     announce(tr("Disconnecting…"));
     m_rpc.stopService(m_pendingId);
@@ -895,12 +963,19 @@ void Controller::completed(quint64 id, bool success, const QString& error, bool 
                 true);
             return;
         }
+        QString runtimeError;
+        const auto runtimeContent = runtimeConfiguration(m_pendingContent, &runtimeError);
+        if (!runtimeError.isEmpty()) {
+            reportSystemProxyError(runtimeError);
+            return;
+        }
         m_operation = Start;
+        m_systemProxy.setTarget({});
         m_pendingId = ++m_nextId;
         resetGroups();
         announce((operation == ValidateForRestart ? tr("Switching to %1…") : tr("Starting %1…"))
                      .arg(m_pendingName));
-        m_rpc.startService(m_pendingId, m_pendingContent);
+        m_rpc.startService(m_pendingId, runtimeContent);
     } else if (operation == Start) {
         // Fast reloads may coalesce STARTING/STOPPING out of the status stream.
         // A successful start still begins a fresh traffic/chart baseline.
@@ -916,6 +991,7 @@ void Controller::completed(quint64 id, bool success, const QString& error, bool 
             refreshGroups();
             refreshConnections();
         }
+        updateSystemProxy();
         announce({});
     } else if (operation == Stop || operation == Delete) {
         if (m_state != Idle)

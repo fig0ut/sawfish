@@ -69,6 +69,23 @@ HomePage::HomePage(Controller* controller, QWidget* parent) : QWidget(parent) {
     active->setWordWrap(true);
     layout->addWidget(active);
 
+    auto* proxyRow = new QHBoxLayout;
+    auto* proxyLabel = new QLabel(tr("System proxy"));
+    auto* proxyToggle = new ToggleSwitch;
+    proxyToggle->setObjectName("systemProxySwitch");
+    proxyToggle->setAccessibleName(tr("System proxy"));
+    proxyToggle->setToolTip(tr("Use Sawfish for applications that follow desktop proxy settings."));
+    proxyLabel->setBuddy(proxyToggle);
+    proxyRow->addWidget(proxyLabel);
+    proxyRow->addStretch();
+    proxyRow->addWidget(proxyToggle);
+    layout->addLayout(proxyRow);
+#ifndef Q_OS_LINUX
+    proxyLabel->hide();
+    proxyToggle->hide();
+#endif
+    connect(proxyToggle, &QAbstractButton::clicked, controller, &Controller::setSystemProxyEnabled);
+
     auto* dashboard = new Dashboard(controller);
     layout->addWidget(dashboard, 1);
     connect(edit, &QToolButton::toggled, this, [=](bool editing) {
@@ -103,6 +120,12 @@ HomePage::HomePage(Controller* controller, QWidget* parent) : QWidget(parent) {
     });
 
     auto refresh = [=] {
+        QSignalBlocker proxyBlocker(proxyToggle);
+        proxyToggle->setChecked(controller->systemProxyEnabled());
+        proxyToggle->setEnabled(
+            (controller->systemProxyAvailable() || controller->systemProxyEnabled()) &&
+            !controller->busy() && !controller->systemProxyBusy() &&
+            !controller->connectionChanging());
         state->setText(controller->stateText());
         const bool connected = controller->state() == Controller::Running ||
                                controller->state() == Controller::Stopping;

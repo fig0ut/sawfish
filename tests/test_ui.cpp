@@ -32,6 +32,7 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QtTest>
+#include <cmath>
 #include <iostream>
 #include <limits>
 
@@ -40,6 +41,112 @@ class UiTest : public QObject {
   private slots:
     void init() {
         QTest::failOnWarning();
+    }
+    void systemProxyPreferenceCanBeDisabledWithoutDesktopSupport() {
+#ifdef Q_OS_LINUX
+        QTemporaryDir directory;
+        QSettings settings(directory.filePath("settings.ini"), QSettings::IniFormat);
+        settings.setValue("proxy/enabled", true);
+        settings.sync();
+        Controller controller(directory.path(), "/missing/rostra", {});
+        MainWindow window(&controller);
+        window.resize(window.minimumSize());
+        window.show();
+        controller.initialize();
+        auto* toggle = window.findChild<QAbstractButton*>("systemProxySwitch");
+        QVERIFY(toggle);
+        QCOMPARE(toggle->accessibleName(), "System proxy");
+        QTRY_VERIFY(toggle->visibleRegion().contains(toggle->rect().center()));
+        QVERIFY(toggle->isChecked());
+        QVERIFY(toggle->isEnabled());
+        QVERIFY(!controller.systemProxyAvailable());
+        toggle->click();
+        QVERIFY(!toggle->isChecked());
+        QVERIFY(!toggle->isEnabled());
+        QVERIFY(toggle->visibleRegion().contains(toggle->rect().center()));
+        QVERIFY(!controller.systemProxyEnabled());
+        settings.sync();
+        QVERIFY(!settings.value("proxy/enabled").toBool());
+#endif
+    }
+    void switchesShareVisibleThemeColors() {
+        const auto luminance = [](const QColor& color) {
+            const auto linear = [](double channel) {
+                return channel <= 0.04045 ? channel / 12.92
+                                          : std::pow((channel + 0.055) / 1.055, 2.4);
+            };
+            return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) +
+                   0.0722 * linear(color.blueF());
+        };
+        const auto contrast = [&](const QColor& first, const QColor& second) {
+            const auto a = luminance(first), b = luminance(second);
+            return (qMax(a, b) + 0.05) / (qMin(a, b) + 0.05);
+        };
+        for (bool dark : {false, true}) {
+            ToggleSwitch toggle;
+            ConnectionSwitch connection;
+            connection.resize(connection.sizeHint());
+            auto palette = toggle.palette();
+            const QColor background(dark ? "#191b28" : "#efefef");
+            palette.setColor(QPalette::Window, background);
+            palette.setColor(QPalette::WindowText, QColor(dark ? "#c8cfdb" : "#24262a"));
+            // Reproduce themes whose surface/disabled roles have almost no contrast.
+            palette.setColor(QPalette::Base, background);
+            palette.setColor(QPalette::Mid, background);
+            palette.setColor(QPalette::Button, background);
+            palette.setColor(QPalette::Disabled, QPalette::WindowText, background);
+            palette.setColor(QPalette::Highlight, QColor(dark ? "#d000db" : "#1673d6"));
+            palette.setColor(QPalette::HighlightedText, Qt::white);
+            toggle.setPalette(palette);
+            connection.setPalette(palette);
+            for (bool enabled : {false, true}) {
+                toggle.setEnabled(enabled);
+                connection.setEnabled(enabled);
+                for (bool checked : {false, true}) {
+                    toggle.setChecked(checked);
+                    connection.setChecked(checked);
+                    for (qreal scale : {1., 1.25, 2.}) {
+                        const auto render = [&](QWidget& widget) {
+                            QImage image(QSize(qRound(widget.width() * scale),
+                                               qRound(widget.height() * scale)),
+                                         QImage::Format_ARGB32_Premultiplied);
+                            image.setDevicePixelRatio(scale);
+                            image.fill(background);
+                            widget.render(&image);
+                            return image;
+                        };
+                        const auto image = render(toggle);
+                        const auto connectionImage = render(connection);
+                        const auto track = image.pixelColor(qRound(27 * scale), qRound(15 * scale));
+                        const auto thumb = image.pixelColor(qRound((checked ? 40 : 14) * scale),
+                                                            qRound(15 * scale));
+                        QVERIFY2(contrast(thumb, track) >= (enabled ? 3.0 : 1.7),
+                                 "The thumb must remain distinguishable from the track.");
+                        QVERIFY2(contrast(track, background) >= (enabled ? 1.7 : 1.25),
+                                 "The track must remain visible against the page.");
+                        QCOMPARE(connectionImage.pixelColor(qRound(46 * scale), qRound(24 * scale)),
+                                 track);
+                        // Sample below the play/pause icon, inside the connection thumb.
+                        QCOMPARE(connectionImage.pixelColor(qRound((checked ? 69 : 23) * scale),
+                                                            qRound(36 * scale)),
+                                 thumb);
+                        const auto screenshot = qEnvironmentVariable("SAWFISH_SWITCH_SCREENSHOT");
+                        if (!screenshot.isEmpty() && scale == 2.) {
+                            QImage preview(324, 96, QImage::Format_ARGB32_Premultiplied);
+                            preview.setDevicePixelRatio(scale);
+                            preview.fill(background);
+                            QPainter painter(&preview);
+                            painter.drawImage(QPoint(0, 0), connectionImage);
+                            painter.drawImage(QPoint(108, 9), image);
+                            painter.end();
+                            QVERIFY(preview.save(screenshot + (dark ? ".dark" : ".light") +
+                                                 (enabled ? ".enabled" : ".disabled") +
+                                                 (checked ? ".on.png" : ".off.png")));
+                        }
+                    }
+                }
+            }
+        }
     }
     void libraryIconsRenderWithThemeAndPixelDensity() {
         const QList<QColor> colors{QColor("#182030"), QColor("#e8eef8"), QColor("#d000db")};

@@ -2,6 +2,7 @@
 #include "backend/daemonprocess.h"
 #include "backend/processcpu.h"
 #include "backend/rpcclient.h"
+#include "backend/systemproxy.h"
 #include "backend/workerprocess.h"
 #include "models/connectionmodel.h"
 #include "models/groupmodel.h"
@@ -26,6 +27,20 @@ class Controller : public QObject {
                RpcClient::ChannelFactory channelFactory = {});
     ~Controller() override;
     void initialize();
+    void initializeSystemProxy(const QString& directory = {}, const QString& executable = {});
+    void setSystemProxyEnabled(bool enabled);
+    bool systemProxyEnabled() const {
+        return m_systemProxyEnabled;
+    }
+    bool systemProxyAvailable() const {
+        return m_managed && m_systemProxy.available();
+    }
+    bool systemProxyActive() const {
+        return m_systemProxy.active();
+    }
+    bool systemProxyBusy() const {
+        return m_systemProxy.busy();
+    }
     void configure(const QString& executable, const QString& socket);
     CoreUpdater* coreUpdater() const {
         return m_coreUpdater.get();
@@ -213,6 +228,9 @@ class Controller : public QObject {
     void resetConnections();
     void stopCoreForShutdown();
     void finishShutdown();
+    void updateSystemProxy();
+    void reportSystemProxyError(const QString& message);
+    QString runtimeConfiguration(const QString& content, QString* error) const;
     RpcClient m_rpc;
     WorkerProcess m_worker;
     DaemonProcess m_core;
@@ -221,6 +239,8 @@ class Controller : public QObject {
     GroupModel m_groups;
     ConnectionModel m_connections;
     QSettings m_settings;
+    SystemProxy m_systemProxy;
+    bool m_systemProxyEnabled = false;
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_download;
     QString m_downloadProfile;

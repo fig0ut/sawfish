@@ -54,6 +54,9 @@ if(BUILD_TESTING AND NOT WIN32)
 endif()
 
 add_library(sawfish_core STATIC
+    backend/proxyprofile.cpp backend/proxyprofile.h
+    backend/proxysettings.cpp backend/proxysettings.h backend/proxyhelper.cpp
+    backend/systemproxy.cpp backend/systemproxy.h
     backend/coreupdater.cpp backend/coreupdater.h
     backend/processcpu.cpp backend/processcpu.h
     backend/rpcclient.cpp backend/rpcclient.h backend/rpcprotocol.h
@@ -100,6 +103,10 @@ if(BUILD_TESTING)
             -o "${SAWFISH_TEST_LOG_DIR}/${name}.txt,txt"
             -o "${SAWFISH_TEST_LOG_DIR}/${name}.xml,junitxml")
     endfunction()
+    qt_add_executable(sawfish_systemproxy_tests tests/test_systemproxy.cpp)
+    target_link_libraries(sawfish_systemproxy_tests PRIVATE sawfish_core Qt::Test)
+    sawfish_add_test(sawfish_systemproxy sawfish_systemproxy_tests)
+    set_tests_properties(sawfish_systemproxy PROPERTIES TIMEOUT 90)
     qt_add_executable(sawfish_desktop_tests tests/test_desktop.cpp)
     target_link_libraries(sawfish_desktop_tests PRIVATE sawfish_core Qt::Test)
     sawfish_add_test(sawfish_desktop sawfish_desktop_tests)
